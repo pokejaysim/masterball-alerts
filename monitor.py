@@ -684,46 +684,83 @@ def check_amazon(url, product=None):
         return False
 
 
+# --- Camoufox browser for Walmart ---
+_camoufox_browser = None
+_camoufox_lock = threading.Lock()
+
+def get_camoufox_browser():
+    """Get or create a persistent Camoufox browser instance."""
+    global _camoufox_browser
+    with _camoufox_lock:
+        if _camoufox_browser is None:
+            try:
+                from camoufox.sync_api import Camoufox
+                proxy_config = {
+                    "server": "http://proxy.example.com:80",
+                    "username": "nvhejsis-rotate",
+                    "password": "dh9ywm5aeafx"
+                }
+                _camoufox_browser = Camoufox(headless=True, proxy=proxy_config, geoip=True)
+                _camoufox_browser.__enter__()
+                log("🦊 Camoufox browser started for Walmart checks")
+            except Exception as e:
+                log(f"❌ Failed to start Camoufox: {e}")
+                _camoufox_browser = None
+        return _camoufox_browser
+
 def check_walmart(url):
     TRUSTED_SELLERS = ['walmart', 'walmart canada', 'walmart.ca']
     try:
-        response = cffi_get_with_fallback(url)
-        if not response:
-            log(f"  ⚠️  Walmart returned no response")
+        browser = get_camoufox_browser()
+        if not browser:
+            log(f"  ⚠️  Walmart: Camoufox not available, skipping")
             return False
-        if response.status_code not in (200, 404):
-            log(f"  ⚠️  Walmart returned {response.status_code}")
+        
+        page = browser.new_page()
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=25000)
+            page.wait_for_timeout(3000)
+            
+            html = page.content()
+            
+            # Check for CAPTCHA (only if page is small = blocked)
+            if len(html) < 15000 and 'captcha' in html.lower():
+                log(f"  ⚠️  Walmart CAPTCHA — Camoufox blocked")
+                page.close()
+                return False
+            
+            json_match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
+            if json_match:
+                try:
+                    data_str = json.dumps(json.loads(json_match.group(1)))
+                    seller_match = re.search(r'"sellerName"\s*:\s*"([^"]+)"', data_str)
+                    seller_name = seller_match.group(1) if seller_match else ''
+
+                    is_trusted = any(t in seller_name.lower() for t in TRUSTED_SELLERS)
+                    is_in_stock = '"availabilityStatus":"IN_STOCK"' in data_str or '"availabilityStatus": "IN_STOCK"' in data_str
+
+                    page.close()
+                    
+                    if not is_in_stock:
+                        return False
+                    if is_trusted:
+                        log(f"  ✅ Walmart: In stock | Seller: {seller_name} (trusted)")
+                        return True
+                    else:
+                        log(f"  ⚠️  In stock but sold by '{seller_name}' (marketplace) — skipping")
+                        return False
+                except json.JSONDecodeError:
+                    pass
+            
+            page.close()
             return False
-
-        html = response.text
-        html_lower = html.lower()
-
-        if 'captcha' in html_lower[:5000] or 'px-captcha' in html_lower[:5000]:
-            log(f"  ⚠️  Walmart CAPTCHA — all profiles failed")
-            return False
-
-        json_match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-        if json_match:
+        except Exception as e:
             try:
-                data_str = json.dumps(json.loads(json_match.group(1)))
-                seller_match = re.search(r'"sellerName"\s*:\s*"([^"]+)"', data_str)
-                seller_name = seller_match.group(1) if seller_match else ''
-
-                is_trusted = any(t in seller_name.lower() for t in TRUSTED_SELLERS)
-                is_in_stock = '"availabilityStatus": "IN_STOCK"' in data_str or '"availabilityStatus":"IN_STOCK"' in data_str
-
-                if not is_in_stock:
-                    return False
-                if is_trusted:
-                    log(f"  ✅ Walmart: In stock | Seller: {seller_name} (trusted)")
-                    return True
-                else:
-                    log(f"  ⚠️  In stock but sold by '{seller_name}' (marketplace) — skipping")
-                    return False
-            except json.JSONDecodeError:
+                page.close()
+            except:
                 pass
-
-        return False
+            log(f"  ❌ Walmart page error: {str(e)[:60]}")
+            return False
     except Exception as e:
         log(f"  ❌ Error checking Walmart: {e}")
         return False
