@@ -689,23 +689,29 @@ _camoufox_browser = None
 _camoufox_lock = threading.Lock()
 
 def check_walmart_camoufox(url):
-    """Check a single Walmart URL using a fresh Camoufox browser session."""
-    try:
-        from camoufox.sync_api import Camoufox
-        proxy_config = {
-            "server": "http://proxy.example.com:80",
-            "username": "nvhejsis-rotate",
-            "password": "dh9ywm5aeafx"
-        }
-        with Camoufox(headless=True, proxy=proxy_config, geoip=True) as browser:
-            page = browser.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=25000)
-            page.wait_for_timeout(3000)
-            html = page.content()
-            page.close()
-            return html
-    except Exception as e:
-        return None
+    """Check a single Walmart URL using a fresh Camoufox browser session.
+    Retries once on proxy/connection failure."""
+    from camoufox.sync_api import Camoufox
+    proxy_config = {
+        "server": "http://proxy.example.com:80",
+        "username": "nvhejsis-rotate",
+        "password": "dh9ywm5aeafx"
+    }
+    for attempt in range(2):  # Try twice (rotating proxy = different IP each time)
+        try:
+            with Camoufox(headless=True, proxy=proxy_config, geoip=True) as browser:
+                page = browser.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=25000)
+                page.wait_for_timeout(3000)
+                html = page.content()
+                page.close()
+                return html
+        except Exception as e:
+            if attempt == 0:
+                time.sleep(2)  # Brief pause before retry
+                continue
+            return None
+    return None
 
 def check_walmart(url):
     TRUSTED_SELLERS = ['walmart', 'walmart canada', 'walmart.ca']
