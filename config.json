@@ -1,0 +1,329 @@
+{
+  "telegram_bot_token": "TELEGRAM_BOT_TOKEN",
+  "telegram_chat_id": "TELEGRAM_CHAT_ID",
+  "check_interval": 30,
+  "products": [
+    {
+      "name": "PE SPC - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DYR8D7YC",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE ETB - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DLPL7LC5",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Pokemon Center ETB - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DTB5N58S",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Booster Bundle - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DN98RVZM",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Mini Tin - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DN4LQL4Y",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Booster Pack - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DWGV8R2N",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Binder Collection - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DLQBQ1XB",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Two-Booster Blister - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DP5HHY1V",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Premium Figure Collection - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0FH8BD6S6",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Accessory Pouch - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0DLQMWC4H",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Lucario/Tyranitar Premium Collection - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0FMY9XXLK",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE SPC - Best Buy",
+      "url": "https://www.bestbuy.ca/en-ca/product/pokemon-trading-card-game-scarlet-violet-prismatic-evolutions-super-premium-collection/19619758",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Surprise Box - Best Buy",
+      "url": "https://www.bestbuy.ca/en-ca/product/pokemon-tcg-scarlet-violet-prismatic-evolutions-surprise-box/19281072",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Poster Collection - Best Buy",
+      "url": "https://www.bestbuy.ca/en-ca/product/pokemon-tcg-scarlet-violet-prismatic-evolutions-poster-collection/19383896",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Mini Tin Espeon - Best Buy",
+      "url": "https://www.bestbuy.ca/en-ca/product/pokemon-tcg-scarlet-violet-prismatic-evolutions-mini-tin-espeon/19383926",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE SPC - Pokemon Center CA",
+      "url": "https://www.pokemoncenter.com/en-ca/product/10-10027-101/pokemon-tcg-scarlet-and-violet-prismatic-evolutions-super-premium-collection",
+      "enabled": false,
+      "note": "Pokemon Center heavily protected",
+      "priority": "high"
+    },
+    {
+      "name": "PE SPC - GameStop",
+      "url": "https://www.gamestop.com/toys-games/trading-cards/products/pokemon-trading-card-game-prismatic-evolutions-super-premium-collection/20020881.html",
+      "enabled": false,
+      "note": "GameStop blocks bots (403)",
+      "priority": "high"
+    },
+    {
+      "name": "AH ETB - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0G3CY83L5",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "AH Booster Bundle - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0G3CV6Z9D",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "AH 2-Pack Blister - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0G547KBNB",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Premium Poster Collection (Mega Lucario) - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0G3CS6XB9",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Tech Sticker Collection - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0G4XK6SVT",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "First Partner Illustration Collection Series 1 - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0GG2BM9YQ",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE ETB - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Scarlet-Violet-Prismatic-Evolutions-Elite-Trainer-Box/6000208831664",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Booster Bundle - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Scarlet-Violet-Prismatic-Evolutions-Booster-Bundle/6000208884941",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Surprise Box - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Scarlet-Violet-Prismatic-Evolutions-Surprise-Box/6000208885051",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Poster Collection - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Scarlet-Violet-Prismatic-Evolutions-Poster-Collection/6000208831614",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Accessory Pouch - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pokemon-TCG-Prismatic-Evolutions-Accessory-Pouch-Special-Collection/48JZ1CGO8LC0",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Premium Figure Collection - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pokemon-TCG-Scarlet-Violet-Prismatic-Evolutions-Premium-Figure-Collection/3RGTNJDMP1NA",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "First Partner Illustration Series 1 - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pokemon-TCG-First-Partner-Illustration-Collection-Series-1/3VOW28YCVGNC",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "Pok\u00e9mon Day 2026 Collection - Amazon.ca",
+      "url": "https://www.amazon.ca/dp/B0G2FVLXVL",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "AH ETB - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-Elite-Trainer-Box/4BBHBZPCR45Z",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "AH Tech Sticker Collection - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-Tech-Sticker-Collection/36DI3PR8V7X2",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Premium Poster Collection - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-Premium-Poster-Collection-Receive-1-at-Random/44V1HEXYK000",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH 2-Pack Blister - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-2-Pack-Blister-Random-Promo/3CAMCNJRUT5S",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH First Partners Deluxe Pin Collection - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-First-Partners-Deluxe-Pin-Collection/0TO5AC8OZGLK",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "Mega Charizard X ex UPC - Costco.ca",
+      "url": "https://www.costco.ca/p/-/pokmon-tcg-mega-charizard-x-ex-ultra-premium-collection/4000410450",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE ETB + Booster Box Bundle - Costco.ca",
+      "url": "https://www.costco.ca/p/-/pokemon-elite-trainer-box-booster-box-prismatic-evolution-english-edition/4000368515",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "3-Pack Pok\u00e9 Ball - Costco.ca",
+      "url": "https://www.costco.ca/p/-/pokmon-3-pack-pok-ball-repeat-ball-premier-ball-pok-ball/4000449312",
+      "enabled": true
+    },
+    {
+      "name": "PE Premium Figure Collection - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/939888/pok-mon-trading-card-game-scarlet-and-violet-prismatic-evolutions-premium-figure-collection",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "PE Booster Bundle - EB Games",
+      "url": "https://www.ebgames.ca/Toys-Collectibles/Games/930392/pok-mon-trading-card-game-scarlet-and-violet-prismatic-evolutions-booster-bundle",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Surprise Box - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/930391/pokemon-trading-card-game-prismatic-evolutions-surprise-box",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "PE Mini Tin - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/930393/pokemon-trading-card-game-prismatic-evolutions-mini-tin-assorted-one-variation-chosen-at-random",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Deluxe Pin Collection - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/961270/pokemon-trading-card-game-mega-evolution-ascended-heroes-deluxe-pin-collection",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Poster Collection - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/960538/pokemon-trading-card-game-mega-evolution-ascended-heroes-premium-poster-collection-one-variation-chosen-at-random",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH ETB - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/960535/pokemon-trading-card-game-mega-evolutions-ascended-heroes-elite-trainer-box",
+      "enabled": true,
+      "priority": "high"
+    },
+    {
+      "name": "AH 2-Pack Blister - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/960534/pokemon-trading-card-game-mega-evolutions-ascended-heroes-2-pack-boosters-assorted-one-variation-chosen-at-random",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Mini Tin - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/960537/pokemon-trading-card-game-mega-evolutions-ascended-heroes-mini-tin-assorted-one-variation-chosen-at-random",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "AH Tech Sticker - EB Games",
+      "url": "https://www.ebgames.ca/Trading%20Cards/Games/960536/pokemon-trading-card-game-ascended-heroes-tech-sticker-collection-one-variation-chosen-at-random",
+      "enabled": true,
+      "priority": "normal"
+    },
+    {
+      "name": "Topps Basketball Value Box - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/2025-26-Topps-Flagship-Basketball-Trading-Cards-Value-Box/4MZI2GU142KN",
+      "enabled": true,
+      "priority": "normal",
+      "category": "sports"
+    },
+    {
+      "name": "Topps Basketball Mega Box - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/2025-26-Topps-Basketball-Trading-Cards-Mega-Box/4DNYQLQHITP7",
+      "enabled": true,
+      "priority": "normal",
+      "category": "sports"
+    },
+    {
+      "name": "Topps Basketball Hanger Box - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/2025-26-Topps-Flagship-Basketball-Trading-Cards-Hanger-Box/5878J3CUYIBT",
+      "enabled": true,
+      "priority": "normal",
+      "category": "sports"
+    },
+    {
+      "name": "Pokemon Day 2026 Collection - Walmart.ca",
+      "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Pok-mon-Day-2026-Collection/70PH2R4R8A83",
+      "enabled": true
+    }
+  ],
+  "telegram_channel_id": "TELEGRAM_CHANNEL_ID"
+}
