@@ -943,13 +943,14 @@ def monitor_loop():
         try:
             cycle_start = time.time()
 
-            # --- Split products: Walmart (sequential via Camoufox) vs others (parallel) ---
+            # --- Split products: hot (PE/AH Amazon), regular, Walmart ---
+            hot_products = [p for p in enabled_products if 'amazon' in p['url'] and any(tag in p['name'] for tag in ['PE ', 'AH '])]
             non_walmart = [p for p in enabled_products if 'walmart.ca' not in p['url']]
             walmart_products = [p for p in enabled_products if 'walmart.ca' in p['url']]
             
             all_results = []
             
-            # Check non-Walmart products in parallel
+            # Check ALL non-Walmart products in parallel (includes hot products)
             with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                 futures = {executor.submit(check_product_wrapper, p): p for p in non_walmart}
                 for future in as_completed(futures):
@@ -1046,7 +1047,55 @@ def monitor_loop():
             # Health watchdog — alert if no cycle completes for 5 min
             last_health_ping = time.time()
 
-            time.sleep(check_interval)
+            # --- HOT PRODUCT FAST-CHECK (PE/AH Amazon every ~10s) ---
+            if hot_products:
+                # Run 2 fast checks during the 30s sleep
+                for fast_round in range(2):
+                    time.sleep(10)
+                    if _shutdown:
+                        break
+                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+                        hot_futures = {executor.submit(check_product_wrapper, p): p for p in hot_products}
+                        for future in as_completed(hot_futures):
+                            product, is_in_stock = future.result()
+                            name = product['name']
+                            url = product['url']
+                            prev_status = stock_status.get(name, False)
+                            if is_in_stock and not prev_status:
+                                if check_alert_cooldown(name):
+                                    log(f"🚨 HOT STOCK ALERT: {name}")
+                                    if USE_DB:
+                                        retailer = 'amazon'
+                                        add_alert(name, 'in_stock', retailer=retailer, url=url, price=_detected_prices.get(name))
+                                        increment_daily_stat('alerts_sent')
+                                    threading.Thread(target=take_screenshot, args=(url, name), daemon=True).start()
+                                    try:
+                                        asin_match = re.search(r'/dp/([A-Z0-9]+)', url)
+                                        if asin_match:
+                                            asin = asin_match.group(1)
+                                            cart_url = f"https://www.amazon.ca/gp/aws/cart/add.html?ASIN.1={asin}&Quantity.1=1"
+                                            subprocess.Popen(['open', '-a', 'Safari', cart_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                                            log(f"🛒 Auto-added to cart: {name} (ASIN: {asin})")
+                                    except Exception as e:
+                                        log(f"⚠️  Auto-cart failed: {e}")
+                                    if use_telegram:
+                                        alert_msg = build_alert_message(product, price=_detected_prices.get(name))
+                                        channel_msg_id = send_telegram(bot_token, channel_id, alert_msg)
+                                        _message_ids[name] = (channel_msg_id, None)
+                                    twitter_post(name, url, price=_detected_prices.get(name))
+                                    send_notification("🚨 HOT STOCK ALERT!", name)
+                                    set_alert_cooldown(name)
+                                    alert_time = time.time()
+                                    _followup_queue.append((time.time(), product, url, alert_time))
+                                    save_followup_state()
+                            elif not is_in_stock and prev_status:
+                                stock_status[name] = False
+                            if is_in_stock:
+                                stock_status[name] = True
+                    if USE_DB:
+                        increment_daily_stat('checks_total')
+            else:
+                time.sleep(check_interval)
 
             if _shutdown:
                 log("⚠️  Graceful shutdown requested")
