@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+pokemon-monitor-env/
+
+# Secrets & credentials
+.env
+.env.*
+*.json.bak
+walmart_cookies.json
+camoufox_proxy.json
+
+# Databases
+*.db
+*.db-shm
+*.db-wal
+masterball.db
+
+# Logs
+*.log
+logs-archive/
+monitor.err.log
+monitor.log
+monitor.pid
+
+# Backups
+backups/
+backup.log
+
+# Screenshots & downloads
+screenshots/
+downloaded_files/
+
+# State files
+check_timestamps.json
+followup_state.json
+known_products.json
+market_prices.json
+preorder_candidates.json
+stock_status.json
+subscriber_state.json
+
+# OS
+.DS_Store

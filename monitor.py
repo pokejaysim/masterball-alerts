@@ -23,6 +23,9 @@ import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Thread-local storage for per-thread HTTP sessions and state
+_thread_local = threading.local()
+
 try:
     import tweepy
 except ImportError:
@@ -67,12 +70,18 @@ AMAZON_USER_AGENTS = [
 # curl_cffi fallback profiles for CAPTCHA bypass
 CFFI_PROFILES = ["chrome131", "chrome", "safari", "safari_ios"]
 
-# Shared session
-session = requests.Session()
-session.headers.update({
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-    'Accept-Language': 'en-CA,en;q=0.9',
-})
+# Thread-safe session getter — each thread gets its own requests.Session
+def get_session():
+    if not hasattr(_thread_local, 'session') or _thread_local.session is None:
+        _thread_local.session = requests.Session()
+        _thread_local.session.headers.update({
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-CA,en;q=0.9',
+        })
+    return _thread_local.session
+
+# Backwards-compat module-level session for non-threaded calls
+session = get_session()
 
 
 def send_telegram(bot_token, chat_id, message, retries=2):
@@ -280,9 +289,33 @@ def take_screenshot(url, name):
         log(f"  ⚠️  Screenshot failed: {e}")
 
 
+# Thread-safe detected prices and message IDs
+_prices_lock = threading.Lock()
+_message_ids_lock = threading.Lock()
+
+def set_detected_price(name, price):
+    with _prices_lock:
+        _detected_prices[name] = price
+
+def get_detected_price(name, default=None):
+    with _prices_lock:
+        return _detected_prices.get(name, default)
+
+def set_message_id(name, channel_id, dm_id=None):
+    with _message_ids_lock:
+        _message_ids[name] = (channel_id, dm_id)
+
+def get_message_id(name):
+    with _message_ids_lock:
+        return _message_ids.get(name, (None, None))
+
+def del_message_id(name):
+    with _message_ids_lock:
+        _message_ids.pop(name, None)
+
 # Track detected prices and "still live" follow-ups
 _detected_prices = {}  # product_name -> price string
-_followup_queue = []   # list of (check_time, product, url, alert_time) for "still live" follow-ups
+_followup_queue = []   # list of (check_time, product, url, alert_time)
 _message_ids = {}      # product_name -> (channel_message_id, dm_message_id)
 FOLLOWUP_DELAY = 150   # 2.5 minutes
 FOLLOWUP_STATE_FILE = os.path.join(MONITOR_DIR, "followup_state.json")
@@ -445,6 +478,51 @@ def build_alert_message(product, price=None):
     )
 
 
+
+# ---------------------------------------------------------------------------
+# Unified alert function (Fix #2: deduplicated alert logic)
+# ---------------------------------------------------------------------------
+
+def fire_alert(product, url, is_hot=False, bot_token='', channel_id='', use_telegram=False):
+    """Fire a restock alert — used by both main loop and hot-product fast-check."""
+    name = product['name']
+    price = get_detected_price(name)
+    retailer = 'amazon' if 'amazon' in url else 'walmart' if 'walmart' in url else 'bestbuy' if 'bestbuy' in url else 'costco' if 'costco' in url else 'ebgames'
+    tag = '🚨 HOT STOCK ALERT' if is_hot else '🚨 STOCK ALERT'
+
+    log(f"{tag}: {name}")
+
+    # Database
+    if USE_DB:
+        add_alert(name, 'in_stock', retailer=retailer, url=url, price=price)
+        increment_daily_stat('alerts_sent')
+
+    # Screenshot (Amazon only)
+    if 'amazon' in url:
+        threading.Thread(target=take_screenshot, args=(url, name), daemon=True).start()
+
+    # Telegram alert
+    if use_telegram and channel_id:
+        alert_msg = build_alert_message(product, price=price)
+        channel_msg_id = send_telegram(bot_token, channel_id, alert_msg)
+        set_message_id(name, channel_msg_id)
+
+    # Twitter
+    twitter_post(name, url, price=price)
+
+    # Desktop notification
+    send_notification(tag, name)
+
+    # Cooldown
+    set_alert_cooldown(name)
+
+    # Queue "still live" follow-up
+    alert_time = time.time()
+    _followup_queue.append((time.time(), product, url, alert_time))
+    save_followup_state()
+    log(f"📥 Queued follow-up for {name} (will check in {FOLLOWUP_DELAY}s)")
+
+
 def process_followups(stock_status, bot_token, channel_id):
     """Check queued follow-ups — edit original message with sold out status."""
     global _followup_queue, _message_ids
@@ -460,7 +538,7 @@ def process_followups(stock_status, bot_token, channel_id):
             is_still_in_stock = stock_status.get(name, False)
             
             # Get stored message IDs
-            channel_msg_id, dm_msg_id = _message_ids.get(name, (None, None))
+            channel_msg_id, dm_msg_id = get_message_id(name)
             
             log(f"  🔍 Checking {name}: in_stock={is_still_in_stock}, msg_id={channel_msg_id}, elapsed={int(now - queued_time)}s")
             
@@ -491,7 +569,7 @@ def process_followups(stock_status, bot_token, channel_id):
                 
                 # Clean up
                 if name in _message_ids:
-                    del _message_ids[name]
+                    del_message_id(name)
             elif is_still_in_stock:
                 log(f"  ✅ Follow-up: {name} still in stock after {FOLLOWUP_DELAY}s (keeping alert)")
                 # Keep in queue for next check? Or remove?
@@ -664,7 +742,7 @@ def check_amazon(url, product=None):
         if price_el:
             try:
                 price_text = price_el.get_text(strip=True).replace(',', '')
-                _detected_prices[product['name'] if product else url] = price_text
+                set_detected_price(product['name'] if product else url, price_text)
                 log(f"  💰 Price: ${price_text}")
             except:
                 pass
@@ -692,11 +770,14 @@ def check_walmart_camoufox(url):
     """Check a single Walmart URL using a fresh Camoufox browser session.
     Retries once on proxy/connection failure."""
     from camoufox.sync_api import Camoufox
-    proxy_config = {
-        "server": "http://proxy.example.com:80",
-        "username": "nvhejsis-rotate",
-        "password": "dh9ywm5aeafx"
-    }
+    proxy_config = None
+    proxy_file = os.path.join(MONITOR_DIR, "camoufox_proxy.json")
+    if os.path.exists(proxy_file):
+        try:
+            with open(proxy_file) as pf:
+                proxy_config = json.load(pf)
+        except:
+            log("  ⚠️  Failed to load camoufox_proxy.json")
     for attempt in range(2):  # Try twice (rotating proxy = different IP each time)
         try:
             with Camoufox(headless=True, proxy=proxy_config, geoip=True) as browser:
@@ -762,7 +843,7 @@ def check_bestbuy(url):
         sku = sku_match.group(1)
 
         api_url = f"https://www.bestbuy.ca/api/v2/json/product/{sku}?lang=en-CA"
-        response = session.get(api_url, timeout=15)
+        response = get_session().get(api_url, timeout=15)
         if response.status_code != 200:
             return False
 
@@ -835,7 +916,7 @@ def check_ebgames(url):
 
 def check_generic(url):
     try:
-        response = session.get(url, timeout=15)
+        response = get_session().get(url, timeout=15)
         if response.status_code != 200:
             return False
         html = response.text.lower()
@@ -969,37 +1050,7 @@ def monitor_loop():
 
                     if is_in_stock and not prev_status:
                         if check_alert_cooldown(name):
-                            log(f"🚨 STOCK ALERT: {name}")
-                            if USE_DB:
-                                retailer = 'amazon' if 'amazon' in url else 'walmart' if 'walmart' in url else 'bestbuy' if 'bestbuy' in url else 'costco' if 'costco' in url else 'ebgames'
-                                add_alert(name, 'in_stock', retailer=retailer, url=url, price=_detected_prices.get(name))
-                                increment_daily_stat('alerts_sent')
-                            if 'amazon' in url:
-                                # Run screenshot in background thread to not block alerts
-                                threading.Thread(target=take_screenshot, args=(url, name), daemon=True).start()
-                                # Auto-add to Jason's Amazon cart via Safari
-                                try:
-                                    asin_match = re.search(r'/dp/([A-Z0-9]+)', url)
-                                    if asin_match:
-                                        asin = asin_match.group(1)
-                                        cart_url = f"https://www.amazon.ca/gp/aws/cart/add.html?ASIN.1={asin}&Quantity.1=1"
-                                        subprocess.Popen(['open', '-a', 'Safari', cart_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                        log(f"🛒 Auto-added to cart: {name} (ASIN: {asin})")
-                                except Exception as e:
-                                    log(f"⚠️  Auto-cart failed: {e}")
-                            if use_telegram:
-                                alert_msg = build_alert_message(product, price=_detected_prices.get(name))
-                                # Send to channel and store message ID
-                                channel_msg_id = send_telegram(bot_token, channel_id, alert_msg)
-                                _message_ids[name] = (channel_msg_id, None)
-                            twitter_post(name, url, price=_detected_prices.get(name))
-                            send_notification("🚨 STOCK ALERT!", name)
-                            set_alert_cooldown(name)
-                            # Queue "still live" follow-up with alert time
-                            alert_time = time.time()
-                            _followup_queue.append((time.time(), product, url, alert_time))
-                            log(f"📥 Queued follow-up for {name} (will check in {FOLLOWUP_DELAY}s)")
-                            save_followup_state()
+                                                fire_alert(product, url, is_hot=False, bot_token=bot_token, channel_id=channel_id, use_telegram=use_telegram)
                         else:
                             log(f"🔇 Alert suppressed (cooldown): {name}")
                     elif not is_in_stock and prev_status:
@@ -1063,31 +1114,7 @@ def monitor_loop():
                             prev_status = stock_status.get(name, False)
                             if is_in_stock and not prev_status:
                                 if check_alert_cooldown(name):
-                                    log(f"🚨 HOT STOCK ALERT: {name}")
-                                    if USE_DB:
-                                        retailer = 'amazon'
-                                        add_alert(name, 'in_stock', retailer=retailer, url=url, price=_detected_prices.get(name))
-                                        increment_daily_stat('alerts_sent')
-                                    threading.Thread(target=take_screenshot, args=(url, name), daemon=True).start()
-                                    try:
-                                        asin_match = re.search(r'/dp/([A-Z0-9]+)', url)
-                                        if asin_match:
-                                            asin = asin_match.group(1)
-                                            cart_url = f"https://www.amazon.ca/gp/aws/cart/add.html?ASIN.1={asin}&Quantity.1=1"
-                                            subprocess.Popen(['open', '-a', 'Safari', cart_url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                                            log(f"🛒 Auto-added to cart: {name} (ASIN: {asin})")
-                                    except Exception as e:
-                                        log(f"⚠️  Auto-cart failed: {e}")
-                                    if use_telegram:
-                                        alert_msg = build_alert_message(product, price=_detected_prices.get(name))
-                                        channel_msg_id = send_telegram(bot_token, channel_id, alert_msg)
-                                        _message_ids[name] = (channel_msg_id, None)
-                                    twitter_post(name, url, price=_detected_prices.get(name))
-                                    send_notification("🚨 HOT STOCK ALERT!", name)
-                                    set_alert_cooldown(name)
-                                    alert_time = time.time()
-                                    _followup_queue.append((time.time(), product, url, alert_time))
-                                    save_followup_state()
+                                                            fire_alert(product, url, is_hot=True, bot_token=bot_token, channel_id=channel_id, use_telegram=use_telegram)
                             elif not is_in_stock and prev_status:
                                 stock_status[name] = False
                             if is_in_stock:
