@@ -9,27 +9,24 @@ import os
 import re
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-MONITOR_DIR = os.path.dirname(os.path.abspath(__file__))
+from settings import load_json_with_local_override
 
 def load_proxy_config():
     """Load Webshare proxy config."""
-    proxy_file = os.path.join(MONITOR_DIR, "walmart_proxy.json")
-    if os.path.exists(proxy_file):
-        try:
-            with open(proxy_file) as f:
-                config = json.load(f)
-            if config.get('enabled'):
-                # Parse proxy URL: http://user:pass@host:port
-                proxy_url = config['proxy_url']
-                match = re.match(r'http://([^:]+):([^@]+)@([^:]+):(\d+)', proxy_url)
-                if match:
-                    return {
-                        'server': f'http://{match.group(3)}:{match.group(4)}',
-                        'username': match.group(1),
-                        'password': match.group(2)
-                    }
-        except:
-            pass
+    try:
+        config = load_json_with_local_override("walmart_proxy.json")
+        if config.get('enabled'):
+            # Parse proxy URL: http://user:pass@host:port
+            proxy_url = config['proxy_url']
+            match = re.match(r'http://([^:]+):([^@]+)@([^:]+):(\d+)', proxy_url)
+            if match:
+                return {
+                    'server': f'http://{match.group(3)}:{match.group(4)}',
+                    'username': match.group(1),
+                    'password': match.group(2)
+                }
+    except:
+        pass
     return None
 
 def check_walmart_playwright(url, headless=True):

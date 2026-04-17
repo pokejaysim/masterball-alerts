@@ -12,14 +12,9 @@ import time
 import requests
 from datetime import datetime
 
-MONITOR_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(MONITOR_DIR, "config.json")
-KNOWN_FILE = os.path.join(MONITOR_DIR, "known_products.json")
+from settings import MONITOR_DIR, load_config
 
-# Load Telegram config from main config
-def load_config():
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
+KNOWN_FILE = os.path.join(MONITOR_DIR, "known_products.json")
 
 def load_known():
     if os.path.exists(KNOWN_FILE):

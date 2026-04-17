@@ -6,28 +6,27 @@ import urllib.parse
 import json
 import os
 
-BOT_TOKEN = "TELEGRAM_BOT_TOKEN"
-CHANNEL_ID = "TELEGRAM_CHANNEL_ID"
-JASON_CHAT_ID = "TELEGRAM_CHAT_ID"
-STATE_FILE = "<repo>/subscriber_state.json"
+from settings import MONITOR_DIR, load_config
 
-def get_subscriber_count():
+STATE_FILE = os.path.join(MONITOR_DIR, "subscriber_state.json")
+
+def get_subscriber_count(bot_token, channel_id):
     """Get current subscriber count from Telegram API"""
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/getChatMemberCount?chat_id={CHANNEL_ID}"
+    url = f"https://api.telegram.org/bot{bot_token}/getChatMemberCount?chat_id={channel_id}"
     response = urllib.request.urlopen(url, timeout=10)
     data = json.loads(response.read())
     if data.get("ok"):
         return data["result"]
     return None
 
-def send_telegram(message):
+def send_telegram(bot_token, chat_id, message):
     """Send DM to Jason"""
     params = urllib.parse.urlencode({
-        "chat_id": JASON_CHAT_ID,
+        "chat_id": chat_id,
         "text": message,
         "parse_mode": "HTML"
     })
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage?{params}"
+    url = f"https://api.telegram.org/bot{bot_token}/sendMessage?{params}"
     try:
         urllib.request.urlopen(url, timeout=5)
     except:
@@ -46,7 +45,16 @@ def save_state(state):
         json.dump(state, f)
 
 def main():
-    current_count = get_subscriber_count()
+    config = load_config()
+    bot_token = str(config.get("telegram_bot_token", "")).strip()
+    channel_id = str(config.get("telegram_channel_id", "")).strip()
+    chat_id = str(config.get("telegram_chat_id", "")).strip()
+
+    if not bot_token or not channel_id or not chat_id:
+        print("❌ Missing Telegram config. Set it in config.local.json or config.json.")
+        return
+
+    current_count = get_subscriber_count(bot_token, channel_id)
     if current_count is None:
         print("❌ Failed to get subscriber count")
         return
@@ -66,7 +74,7 @@ def main():
         msg += f"Current: {current_count} subscribers\n"
         msg += f"Change: {'+' if diff > 0 else ''}{diff}\n"
         msg += f"Previous: {prev_count}"
-        send_telegram(msg)
+        send_telegram(bot_token, chat_id, msg)
         print(f"✅ Notified: {current_count} subscribers ({'+' if diff > 0 else ''}{diff})")
     elif prev_count == 0:
         # First run

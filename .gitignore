@@ -8,6 +8,8 @@ pokemon-monitor-env/
 # Secrets & credentials
 .env
 .env.*
+config.local.json
+walmart_proxy.local.json
 *.json.bak
 walmart_cookies.json
 camoufox_proxy.json

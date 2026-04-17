@@ -9,9 +9,8 @@ import time
 from datetime import datetime
 from statistics import median
 
-# Configuration
-MONITOR_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(MONITOR_DIR, "config.json")
+from settings import MONITOR_DIR, load_config
+
 MARKET_FILE = os.path.join(MONITOR_DIR, "market_prices.json")
 
 USER_AGENTS = [
@@ -77,12 +76,11 @@ def get_ebay_sold_prices(product_name):
         return None
 
 def main():
-    if not os.path.exists(CONFIG_FILE):
-        log(f"❌ Config file not found at {CONFIG_FILE}")
+    try:
+        config = load_config()
+    except FileNotFoundError as exc:
+        log(f"❌ {exc}")
         return
-
-    with open(CONFIG_FILE) as f:
-        config = json.load(f)
 
     products = config.get('products', [])
     if not products:

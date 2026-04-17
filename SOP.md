@@ -51,13 +51,15 @@ RestockBall is an automated Pokemon TCG restock monitoring system that tracks 45
 
 | File | Path | Description |
 |------|------|-------------|
-| Monitor script | `~/.openclaw/workspace/pokemon-monitor/monitor.py` | Main monitoring script |
-| Config | `~/.openclaw/workspace/pokemon-monitor/config.json` | Products, API keys, settings |
-| Control script | `~/.openclaw/workspace/pokemon-monitor/control.sh` | Start/stop/status commands |
-| Stock status | `~/.openclaw/workspace/pokemon-monitor/stock_status.json` | Tracks current stock state |
-| Logs | `~/.openclaw/workspace/pokemon-monitor/monitor.log` | Real-time monitoring logs |
-| Error logs | `~/.openclaw/workspace/pokemon-monitor/monitor.err.log` | Error output |
-| Log rotation | `~/.openclaw/workspace/pokemon-monitor/rotate-logs.sh` | Daily log rotation script |
+| Monitor script | `<repo>/monitor.py` | Main monitoring script |
+| Config defaults | `<repo>/config.json` | Products and public-safe defaults |
+| Local secrets | `<repo>/config.local.json` | Telegram and API tokens (ignored by git) |
+| Walmart proxy override | `<repo>/walmart_proxy.local.json` | Optional proxy credentials (ignored by git) |
+| Control script | `<repo>/control.sh` | Start/stop/status commands |
+| Stock status | `<repo>/stock_status.json` | Tracks current stock state |
+| Logs | `<repo>/monitor.log` | Real-time monitoring logs |
+| Error logs | `<repo>/monitor.err.log` | Error output |
+| Log rotation | `<repo>/rotate-logs.sh` | Daily log rotation script |
 | LaunchAgent | `~/Library/LaunchAgents/com.peter.pokemon-monitor.plist` | Auto-start on boot |
 | Log rotation agent | `~/Library/LaunchAgents/com.peter.pokemon-log-rotation.plist` | Daily log rotation |
 | Python venv | `~/.openclaw/workspace/pokemon-monitor-env/` | Virtual environment |
@@ -136,10 +138,10 @@ Products are assigned priority tiers:
 |---------|-------|
 | Bot Name | RestockBall |
 | Bot Username | @PokeJay_Stock_Bot |
-| Bot Token | `TELEGRAM_BOT_TOKEN` |
-| Jason's Chat ID | `TELEGRAM_CHAT_ID` |
+| Bot Token | Stored in `config.local.json` |
+| Jason's Chat ID | Stored in `config.local.json` |
 | Channel Name | RestockBall |
-| Channel ID | `TELEGRAM_CHANNEL_ID` |
+| Channel ID | Stored in `config.local.json` |
 
 ### Notification Routing
 
@@ -226,7 +228,7 @@ Tell Peter the product URL in Discord and he'll add it and restart the monitor.
 
 ### Option 2: Edit config.json manually
 ```bash
-cd ~/.openclaw/workspace/pokemon-monitor
+cd /path/to/masterball-alerts
 nano config.json
 ```
 

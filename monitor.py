@@ -23,6 +23,8 @@ import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from settings import MONITOR_DIR, load_config, load_json_with_local_override
+
 # Thread-local storage for per-thread HTTP sessions and state
 _thread_local = threading.local()
 
@@ -39,9 +41,6 @@ def _handle_signal(signum, frame):
 signal.signal(signal.SIGTERM, _handle_signal)
 signal.signal(signal.SIGINT, _handle_signal)
 
-# Configuration
-MONITOR_DIR = os.path.dirname(os.path.abspath(__file__))
-CONFIG_FILE = os.path.join(MONITOR_DIR, "config.json")
 STOCK_STATUS_FILE = os.path.join(MONITOR_DIR, "stock_status.json")
 TIMESTAMPS_FILE = os.path.join(MONITOR_DIR, "check_timestamps.json")
 ALERT_COOLDOWNS_FILE = os.path.join(MONITOR_DIR, "alert_cooldowns.json")
@@ -239,11 +238,6 @@ def load_json(path):
 def save_json(path, data):
     with open(path, 'w') as f:
         json.dump(data, f, indent=2)
-
-
-def load_config():
-    with open(CONFIG_FILE) as f:
-        return json.load(f)
 
 
 def check_alert_cooldown(product_name):
@@ -599,15 +593,12 @@ def load_walmart_cookies():
 
 def load_walmart_proxy():
     """Load Walmart proxy config (Webshare residential proxy)."""
-    proxy_file = os.path.join(MONITOR_DIR, "walmart_proxy.json")
-    if os.path.exists(proxy_file):
-        try:
-            with open(proxy_file) as f:
-                proxy_config = json.load(f)
-            if proxy_config.get('enabled'):
-                return proxy_config.get('proxy_url')
-        except:
-            pass
+    try:
+        proxy_config = load_json_with_local_override("walmart_proxy.json")
+        if proxy_config.get('enabled'):
+            return proxy_config.get('proxy_url')
+    except:
+        pass
     return None
 
 _walmart_cookie_str = load_walmart_cookies()

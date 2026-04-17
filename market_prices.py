@@ -12,8 +12,9 @@ import os
 import time
 from datetime import datetime
 
-PRICECHARTING_TOKEN = "PRICECHARTING_API_TOKEN"
-MARKET_PRICES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "market_prices.json")
+from settings import load_config, repo_path
+
+MARKET_PRICES_FILE = repo_path("market_prices.json")
 
 # Product name (as used in config.json) → PriceCharting product ID
 # Only products with confirmed accurate matches
@@ -111,10 +112,21 @@ def get_usd_to_cad_rate():
     return 1.44  # Fallback
 
 
-def fetch_pricecharting(product_id):
+def get_pricecharting_token():
+    token = os.environ.get("PRICECHARTING_TOKEN", "").strip()
+    if token:
+        return token
+
+    try:
+        return str(load_config().get("pricecharting_token", "")).strip()
+    except FileNotFoundError:
+        return ""
+
+
+def fetch_pricecharting(product_id, token):
     """Fetch price from PriceCharting API"""
     try:
-        url = f"https://www.pricecharting.com/api/product?t={PRICECHARTING_TOKEN}&id={product_id}"
+        url = f"https://www.pricecharting.com/api/product?t={token}&id={product_id}"
         req = urllib.request.Request(url, headers={'User-Agent': 'MasterBall/1.0'})
         response = urllib.request.urlopen(req, timeout=10)
         data = json.loads(response.read())
@@ -144,20 +156,24 @@ def sync_prices():
     
     # Get exchange rate
     usd_to_cad = get_usd_to_cad_rate()
-    
+    pricecharting_token = get_pricecharting_token()
+
     # Fetch PriceCharting prices (deduplicate IDs to minimize API calls)
     unique_ids = set(PRODUCT_MAP.values())
     pc_prices_usd = {}
-    
-    print(f"\n📊 Fetching {len(unique_ids)} unique products from PriceCharting...")
-    for product_id in unique_ids:
-        price = fetch_pricecharting(product_id)
-        if price:
-            pc_prices_usd[product_id] = price
-            print(f"  ✅ ID {product_id}: ${price:.2f} USD (${price * usd_to_cad:.2f} CAD)")
-        else:
-            print(f"  ❌ ID {product_id}: No price data")
-        time.sleep(1.1)  # Rate limit: 1 call/second
+
+    if pricecharting_token:
+        print(f"\n📊 Fetching {len(unique_ids)} unique products from PriceCharting...")
+        for product_id in unique_ids:
+            price = fetch_pricecharting(product_id, pricecharting_token)
+            if price:
+                pc_prices_usd[product_id] = price
+                print(f"  ✅ ID {product_id}: ${price:.2f} USD (${price * usd_to_cad:.2f} CAD)")
+            else:
+                print(f"  ❌ ID {product_id}: No price data")
+            time.sleep(1.1)  # Rate limit: 1 call/second
+    else:
+        print("\n⚠️  No PriceCharting token configured; using manual market prices only.")
     
     # Build market prices dict
     market_prices = {

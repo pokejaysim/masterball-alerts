@@ -8,9 +8,12 @@ Does NOT auto-add to monitor.
 import requests
 from bs4 import BeautifulSoup
 import json
+import os
 import re
 from datetime import datetime
 import time
+
+MONITOR_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def scrape_pokebeach():
     """Scrape PokeBeach news for upcoming TCG products."""
@@ -111,7 +114,7 @@ def scrape_serebii():
 
 def save_candidates(products):
     """Save scraped products to file for review."""
-    output_file = "<repo>/preorder_candidates.json"
+    output_file = os.path.join(MONITOR_DIR, "preorder_candidates.json")
     
     # Load existing candidates
     existing = []

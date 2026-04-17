@@ -1,4 +1,4 @@
 {
-  "proxy_url": "http://USERNAME:PASSWORD@proxy.example.com:80",
-  "enabled": true
+  "proxy_url": "",
+  "enabled": false
 }
