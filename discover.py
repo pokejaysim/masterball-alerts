@@ -37,7 +37,7 @@ USER_AGENT = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
 
-DEFAULT_AUTO_APPROVE_RETAILERS = {"walmart", "costco", "bestbuy", "ebgames"}
+DEFAULT_AUTO_APPROVE_RETAILERS = {"costco", "bestbuy", "ebgames"}
 DEFAULT_AUTO_APPROVE_MIN_CONFIDENCE = 0.82
 
 

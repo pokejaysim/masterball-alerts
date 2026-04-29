@@ -64,7 +64,7 @@ Discovery now runs automatically from the monitor. Defaults in `config.json`:
 - `auto_run`: enabled
 - `auto_run_interval_minutes`: every 3 hours
 - `auto_approve`: enabled for high-confidence matches
-- `auto_approve_retailers`: Walmart, Costco, Best Buy, EB Games
+- `auto_approve_retailers`: Costco, Best Buy, EB Games
 
 Amazon and Pokemon Center still stay review-first by default because they are noisier/protected.
 
@@ -92,7 +92,7 @@ To skip manual review for high-confidence retailer matches:
 ./control.sh discover-auto-add
 ```
 
-Auto-add uses the guardrails in `config.json` under `discovery`: minimum confidence `0.82`, default retailers Walmart, Costco, Best Buy, and EB Games. Amazon and Pokemon Center still go to review by default because they are noisier/protected.
+Auto-add uses the guardrails in `config.json` under `discovery`: minimum confidence `0.82`, default retailers Costco, Best Buy, and EB Games. Walmart, Amazon, and Pokemon Center stay review-first by default because they are noisier/protected.
 
 ## 📱 How It Works
 

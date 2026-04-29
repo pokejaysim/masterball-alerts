@@ -10,7 +10,6 @@
     "auto_approve": true,
     "auto_approve_min_confidence": 0.82,
     "auto_approve_retailers": [
-      "walmart",
       "costco",
       "bestbuy",
       "ebgames"
