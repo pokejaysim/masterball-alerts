@@ -56,6 +56,7 @@ RestockBall is an automated Pokemon TCG restock monitoring system that tracks 45
 | Local secrets | `<repo>/config.local.json` | Telegram and API tokens (ignored by git) |
 | Walmart proxy override | `<repo>/walmart_proxy.local.json` | Optional proxy credentials (ignored by git) |
 | Control script | `<repo>/control.sh` | Start/stop/status commands |
+| Private status page | `<repo>/status_page.py` | Local dashboard for service health |
 | Stock status | `<repo>/stock_status.json` | Tracks current stock state |
 | Logs | `<repo>/monitor.log` | Real-time monitoring logs |
 | Error logs | `<repo>/monitor.err.log` | Error output |
@@ -185,10 +186,13 @@ Product Page | Add to Cart
 
 ### Checking Monitor Status
 ```bash
-cd ~/.openclaw/workspace/pokemon-monitor
+cd /path/to/masterball-alerts
 
 # Check if running
 ./control.sh status
+
+# Open private status page
+./control.sh dashboard-open
 
 # View live logs
 ./control.sh logs
@@ -201,6 +205,8 @@ grep "🚨" monitor.log | tail -10
 # Check which sellers are being blocked
 grep "⚠️.*sold by" monitor.log | tail -20
 ```
+
+The status page is local-only by default at `http://127.0.0.1:8787`. It shows whether the monitor LaunchAgent is running, whether logs are fresh, current product/discovery counts, retailer degradation signals, and the next commands to run if the service is down.
 
 ### Restart Monitor
 ```bash

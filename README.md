@@ -8,6 +8,7 @@ Automated monitor that sends Telegram alerts when Pokemon products come back in 
 - `config.json` - Public-safe defaults and product list
 - `config.local.json` - Your local Telegram and API tokens (ignored by git)
 - `control.sh` - Easy control script
+- `status_page.py` - Private local health dashboard
 - `stock_status.json` - Auto-generated stock tracking
 - `monitor.log` - Log file
 
@@ -49,6 +50,9 @@ You can copy the shape from `config.local.example.json` and `walmart_proxy.local
 
 # Check status
 ./control.sh status
+
+# Start/open private local status page
+./control.sh dashboard-open
 
 # Stop monitor
 ./control.sh stop
@@ -124,6 +128,21 @@ Manual seed products still live in `config.json`:
 ./control.sh test-product "https://www.bestbuy.ca/en-ca/product/example/12345678"
 ./control.sh discover-dry-run
 ```
+
+## 🚦 Private Status Page
+
+The status page is an internal Mac Mini tool. It binds to `127.0.0.1` by default, so it is not public-facing.
+
+```bash
+./control.sh dashboard-start
+./control.sh dashboard-open
+./control.sh dashboard-status
+./control.sh status-json
+```
+
+Open: `http://127.0.0.1:8787`
+
+It shows whether the monitor LaunchAgent is running, how fresh the logs are, active product counts, discovery queue counts, retailer degradation signals, and the recent log tail. If the monitor is down or stale, it shows the exact control commands to run next.
 
 ## 🔧 Troubleshooting
 
