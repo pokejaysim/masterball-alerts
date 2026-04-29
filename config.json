@@ -3,6 +3,16 @@
   "telegram_chat_id": "",
   "pricecharting_token": "",
   "check_interval": 30,
+  "discovery": {
+    "auto_approve": false,
+    "auto_approve_min_confidence": 0.82,
+    "auto_approve_retailers": [
+      "walmart",
+      "costco",
+      "bestbuy",
+      "ebgames"
+    ]
+  },
   "products": [
     {
       "name": "PE SPC - Amazon.ca",

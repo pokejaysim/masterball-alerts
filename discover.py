@@ -11,7 +11,13 @@ from urllib.parse import urljoin
 import requests
 from bs4 import BeautifulSoup
 
-from database import add_or_update_candidate, expire_old_candidates, get_approved_products, init_db
+from database import (
+    add_or_update_candidate,
+    expire_old_candidates,
+    get_approved_products,
+    init_db,
+    set_candidate_status,
+)
 from product_utils import (
     candidate_id,
     default_priority,
@@ -30,6 +36,9 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 )
+
+DEFAULT_AUTO_APPROVE_RETAILERS = {"walmart", "costco", "bestbuy", "ebgames"}
+DEFAULT_AUTO_APPROVE_MIN_CONFIDENCE = 0.82
 
 
 def log(msg):
@@ -300,8 +309,64 @@ def send_review_messages(bot_token, chat_id, candidates):
     send_telegram(bot_token, chat_id, "\n".join(lines).strip())
 
 
-def run_discovery(dry_run=False, send_review=True, print_limit=50):
+def send_auto_approve_summary(bot_token, chat_id, approved):
+    if not bot_token or not chat_id or not approved:
+        return
+    batch = approved[:10]
+    lines = ["✅ <b>Auto-added Pokemon TCG products</b>", ""]
+    for candidate in batch:
+        lines.extend([
+            f"<b>{candidate['id']}</b> | {retailer_display_name(candidate['retailer'])}",
+            escape_html(candidate["name"]),
+            f"{escape_html(candidate['priority'])} priority | confidence {float(candidate.get('confidence') or 0):.2f}",
+            escape_html(candidate["url"]),
+            "",
+        ])
+    if len(approved) > len(batch):
+        lines.append(f"...and {len(approved) - len(batch)} more auto-added.")
+    lines.append("These will be picked up by the monitor on its next product reload.")
+    send_telegram(bot_token, chat_id, "\n".join(lines).strip())
+
+
+def _parse_retailers(value):
+    if value is None:
+        return set(DEFAULT_AUTO_APPROVE_RETAILERS)
+    if isinstance(value, str):
+        return {part.strip().lower() for part in value.split(",") if part.strip()}
+    return {str(part).strip().lower() for part in value if str(part).strip()}
+
+
+def should_auto_approve(candidate, min_confidence, retailers):
+    if candidate["retailer"] not in retailers:
+        return False
+    if float(candidate.get("confidence") or 0) < float(min_confidence):
+        return False
+    if candidate["retailer"] == "pokemoncenter":
+        return False
+    return True
+
+
+def run_discovery(
+    dry_run=False,
+    send_review=True,
+    print_limit=50,
+    auto_approve=None,
+    auto_min_confidence=None,
+    auto_retailers=None,
+):
     config = load_config()
+    discovery_config = config.get("discovery", {})
+    if auto_approve is None:
+        auto_approve = bool(discovery_config.get("auto_approve", False))
+    if auto_min_confidence is None:
+        auto_min_confidence = discovery_config.get(
+            "auto_approve_min_confidence",
+            DEFAULT_AUTO_APPROVE_MIN_CONFIDENCE,
+        )
+    if auto_retailers is None:
+        auto_retailers = discovery_config.get("auto_approve_retailers")
+    auto_retailers = _parse_retailers(auto_retailers)
+
     if not dry_run:
         init_db()
         expire_old_candidates()
@@ -317,6 +382,7 @@ def run_discovery(dry_run=False, send_review=True, print_limit=50):
     all_candidates = dedupe(all_candidates)
     review_candidates = [c for c in all_candidates if normalize_url(c["url"]) not in existing_urls]
     new_candidates = []
+    auto_approved = []
 
     if dry_run:
         shown = review_candidates[:print_limit]
@@ -325,17 +391,40 @@ def run_discovery(dry_run=False, send_review=True, print_limit=50):
             log(f"  {candidate['id']} | {candidate['name']} | {candidate['url']}")
         if len(review_candidates) > len(shown):
             log(f"  ...{len(review_candidates) - len(shown)} more hidden. Use --limit to show more.")
+        if auto_approve:
+            would_auto = [
+                c for c in review_candidates
+                if should_auto_approve(c, auto_min_confidence, auto_retailers)
+            ]
+            log(
+                f"  Auto-add mode would approve {len(would_auto)} candidates "
+                f"(min confidence {float(auto_min_confidence):.2f}; retailers {', '.join(sorted(auto_retailers))})."
+            )
         return review_candidates
 
     for candidate in review_candidates:
         stored, inserted = add_or_update_candidate(candidate)
+        if stored.get("status") == "pending" and auto_approve and should_auto_approve(stored, auto_min_confidence, auto_retailers):
+            approved = set_candidate_status(stored["id"], "approved", reason="Auto-approved by discovery")
+            if approved:
+                auto_approved.append(approved)
+            continue
         if inserted and stored.get("status") == "pending":
             new_candidates.append(stored)
 
     log("Discovery complete")
     log(f"  Total candidates: {len(all_candidates)}")
     log(f"  Not already monitored: {len(review_candidates)}")
+    log(f"  Auto-approved: {len(auto_approved)}")
     log(f"  Newly queued: {len(new_candidates)}")
+
+    if send_review and auto_approved:
+        send_auto_approve_summary(
+            config.get("telegram_bot_token", ""),
+            config.get("telegram_chat_id", ""),
+            auto_approved,
+        )
+        log("  Telegram auto-add summary sent")
 
     if send_review and new_candidates:
         send_review_messages(
@@ -345,7 +434,7 @@ def run_discovery(dry_run=False, send_review=True, print_limit=50):
         )
         log("  Telegram review message sent")
 
-    return new_candidates
+    return auto_approved + new_candidates
 
 
 def main():
@@ -353,8 +442,18 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Print candidates without writing the queue or sending Telegram.")
     parser.add_argument("--no-telegram", action="store_true", help="Do not send Telegram review messages.")
     parser.add_argument("--limit", type=int, default=50, help="Dry-run candidate print limit.")
+    parser.add_argument("--auto-approve", action="store_true", help="Automatically approve high-confidence candidates.")
+    parser.add_argument("--auto-min-confidence", type=float, default=None, help="Minimum confidence for auto-approval.")
+    parser.add_argument("--auto-retailers", default=None, help="Comma-separated retailers allowed for auto-approval.")
     args = parser.parse_args()
-    run_discovery(dry_run=args.dry_run, send_review=not args.no_telegram, print_limit=args.limit)
+    run_discovery(
+        dry_run=args.dry_run,
+        send_review=not args.no_telegram,
+        print_limit=args.limit,
+        auto_approve=args.auto_approve or None,
+        auto_min_confidence=args.auto_min_confidence,
+        auto_retailers=args.auto_retailers,
+    )
 
 
 if __name__ == "__main__":

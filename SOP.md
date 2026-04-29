@@ -238,7 +238,14 @@ New candidates are sent to the owner Telegram chat. Approve or ignore them with:
 
 Approved products are stored in SQLite and loaded by the monitor without editing `config.json`.
 
-### Option 2: Edit config.json manually
+### Option 2: Discovery Auto-Add
+```bash
+./control.sh discover-auto-add
+```
+
+Auto-add approves high-confidence candidates from the configured retailers. Defaults live in `config.json` under `discovery`: minimum confidence `0.82`, retailers Walmart, Costco, Best Buy, and EB Games. Amazon and Pokemon Center remain review-first by default because they are noisier or heavily protected.
+
+### Option 3: Edit config.json manually
 ```bash
 cd /path/to/masterball-alerts
 nano config.json
@@ -281,7 +288,7 @@ launchctl load ~/Library/LaunchAgents/com.peter.pokemon-monitor.plist
 ### Adding Individual DM Users
 1. User messages @PokeJay_Stock_Bot on Telegram
 2. Peter grabs their chat ID from the bot API
-3. Update monitor.py to send to additional chat IDs
+3. Update the notification routing code or channel settings to send to additional chat IDs
 4. Restart monitor
 
 ---
@@ -305,7 +312,7 @@ launchctl load ~/Library/LaunchAgents/com.peter.pokemon-monitor.plist
 1. Check logs: `tail -50 monitor.log`
 2. Look for errors: `tail -20 monitor.err.log`
 3. Verify Telegram bot token is valid
-4. Test manually: Ask Peter to send a test ping
+4. Test manually with a Telegram API ping or `./control.sh doctor`
 
 ### Walmart Returning 404/520 Errors
 - Rate limiting — Walmart blocks too many requests

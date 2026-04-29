@@ -90,6 +90,12 @@ case "$1" in
         "$PYTHON" "$SCRIPT_DIR/discover.py" --dry-run "$@"
         ;;
 
+    discover-auto-add)
+        echo "🔍 Discovering and auto-adding high-confidence Pokemon TCG products..."
+        shift
+        "$PYTHON" "$SCRIPT_DIR/discover.py" --auto-approve "$@"
+        ;;
+
     doctor)
         "$PYTHON" "$SCRIPT_DIR/doctor.py"
         ;;
@@ -112,7 +118,7 @@ case "$1" in
         ;;
         
     *)
-        echo "Usage: $0 {bootstrap|start|stop|restart|status|logs|discover-now|discover-dry-run|doctor|doctor-retailers|test-product|test}"
+        echo "Usage: $0 {bootstrap|start|stop|restart|status|logs|discover-now|discover-dry-run|discover-auto-add|doctor|doctor-retailers|test-product|test}"
         echo ""
         echo "Commands:"
         echo "  bootstrap        - Create/update venv, install dependencies, initialize DB"
@@ -123,6 +129,7 @@ case "$1" in
         echo "  logs    - View live logs"
         echo "  discover-now     - Scan retailers and send Telegram review queue"
         echo "  discover-dry-run - Scan retailers without saving or sending Telegram"
+        echo "  discover-auto-add - Auto-approve high-confidence discovered products"
         echo "  doctor           - Check setup and local dependencies"
         echo "  doctor-retailers - Check setup plus one live check per retailer"
         echo "  test-product     - Check one product URL and print parsed result"

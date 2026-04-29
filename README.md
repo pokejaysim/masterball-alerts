@@ -77,6 +77,14 @@ Approve or ignore from Telegram:
 
 Approved products are loaded by the monitor without editing `config.json`.
 
+To skip manual review for high-confidence retailer matches:
+
+```bash
+./control.sh discover-auto-add
+```
+
+Auto-add uses the guardrails in `config.json` under `discovery`: minimum confidence `0.82`, default retailers Walmart, Costco, Best Buy, and EB Games. Amazon and Pokemon Center still go to review by default because they are noisier/protected.
+
 ## 📱 How It Works
 
 1. Script checks product URLs every 30 seconds (configurable)
@@ -118,7 +126,7 @@ Manual seed products still live in `config.json`:
 **Monitor not detecting stock:**
 - Some sites need custom detection logic
 - Check `monitor.log` for errors
-- Ask Peter to add site-specific support
+- Run `./control.sh test-product "<url>"` to inspect one product
 
 ## 📊 Logs
 
