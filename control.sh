@@ -6,6 +6,9 @@ VENV_DIR="${MASTERBALL_VENV:-$SCRIPT_DIR/../pokemon-monitor-env}"
 PYTHON="$VENV_DIR/bin/python3"
 MONITOR="$SCRIPT_DIR/monitor.py"
 PID_FILE="$SCRIPT_DIR/monitor.pid"
+LAUNCH_LABEL="com.masterball.alerts"
+LAUNCH_PLIST="$HOME/Library/LaunchAgents/$LAUNCH_LABEL.plist"
+LAUNCH_LOG="$HOME/Library/Logs/masterball-alerts.log"
 
 if [ ! -x "$PYTHON" ]; then
     if [ -x "$SCRIPT_DIR/.venv/bin/python3" ]; then
@@ -19,6 +22,15 @@ cd "$SCRIPT_DIR"
 
 case "$1" in
     start)
+        if [ -f "$LAUNCH_PLIST" ]; then
+            echo "🚀 Starting MasterBall LaunchAgent..."
+            launchctl bootstrap "gui/$(id -u)" "$LAUNCH_PLIST" >/dev/null 2>&1 || true
+            launchctl kickstart -k "gui/$(id -u)/$LAUNCH_LABEL"
+            echo "✅ LaunchAgent started"
+            echo "📝 Logs: tail -f $LAUNCH_LOG"
+            exit 0
+        fi
+
         if [ -f "$PID_FILE" ]; then
             PID=$(cat "$PID_FILE")
             if ps -p $PID > /dev/null 2>&1; then
@@ -35,6 +47,14 @@ case "$1" in
         ;;
         
     stop)
+        if launchctl print "gui/$(id -u)/$LAUNCH_LABEL" >/dev/null 2>&1; then
+            echo "⏹️  Stopping MasterBall LaunchAgent..."
+            launchctl bootout "gui/$(id -u)" "$LAUNCH_PLIST" >/dev/null 2>&1 || true
+            rm -f "$PID_FILE"
+            echo "✅ LaunchAgent stopped"
+            exit 0
+        fi
+
         if [ ! -f "$PID_FILE" ]; then
             echo "❌ Monitor is not running"
             exit 1
@@ -58,6 +78,17 @@ case "$1" in
         ;;
         
     status)
+        if launchctl print "gui/$(id -u)/$LAUNCH_LABEL" >/dev/null 2>&1; then
+            STATE=$(launchctl print "gui/$(id -u)/$LAUNCH_LABEL" 2>/dev/null | awk -F' = ' '/state =/ {print $2; exit}')
+            PID=$(launchctl print "gui/$(id -u)/$LAUNCH_LABEL" 2>/dev/null | awk -F' = ' '/pid =/ {print $2; exit}')
+            if [ "$STATE" = "running" ]; then
+                echo "✅ Monitor LaunchAgent is running (PID: ${PID:-unknown})"
+                exit 0
+            fi
+            echo "⚠️  Monitor LaunchAgent exists but state is: ${STATE:-unknown}"
+            exit 1
+        fi
+
         if [ -f "$PID_FILE" ]; then
             PID=$(cat "$PID_FILE")
             if ps -p $PID > /dev/null 2>&1; then
@@ -75,7 +106,11 @@ case "$1" in
         ;;
         
     logs)
-        tail -f "$SCRIPT_DIR/monitor.log"
+        if [ -f "$LAUNCH_LOG" ]; then
+            tail -f "$LAUNCH_LOG"
+        else
+            tail -f "$SCRIPT_DIR/monitor.log"
+        fi
         ;;
 
     discover-now)
