@@ -89,8 +89,8 @@ RestockBall is an automated Pokemon TCG restock monitoring system that tracks 45
 - **Note:** Website (HTML) blocks bots, but API is open
 
 ### Walmart.ca
-- **Method:** curl_cffi (chrome131 TLS fingerprint) + __NEXT_DATA__ JSON parsing
-- **CAPTCHA Bypass:** curl_cffi impersonating chrome131
+- **Method:** curl_cffi (chrome131 TLS fingerprint) + __NEXT_DATA__ JSON parsing first, then selective Playwright browser checks for high-priority approved products
+- **CAPTCHA Handling:** Preserve previous stock state, log degraded health, and back off browser checks instead of marking products sold out
 - **Stock Detection:**
   - `"availabilityStatus": "IN_STOCK"` = Available
   - `"sellerName"` checked against trusted list
@@ -223,8 +223,20 @@ launchctl unload ~/Library/LaunchAgents/com.peter.pokemon-monitor.plist
 
 ## Adding New Products
 
-### Option 1: Ask Peter (Easiest)
-Tell Peter the product URL in Discord and he'll add it and restart the monitor.
+### Option 1: Discovery Review Queue (Recommended)
+```bash
+./control.sh discover-now
+```
+
+New candidates are sent to the owner Telegram chat. Approve or ignore them with:
+
+```text
+/approve abc123
+/ignore abc123
+/pending
+```
+
+Approved products are stored in SQLite and loaded by the monitor without editing `config.json`.
 
 ### Option 2: Edit config.json manually
 ```bash
@@ -335,7 +347,7 @@ launchctl load ~/Library/LaunchAgents/com.peter.pokemon-monitor.plist
 - `requests` — HTTP client (Amazon, Best Buy)
 - `beautifulsoup4` — HTML parsing
 - `curl_cffi` — TLS fingerprint impersonation (Walmart, Costco, EB Games)
-- `playwright` — Installed but not currently used (reserved for future)
+- `playwright` — Selective browser fallback and screenshots
 
 ---
 

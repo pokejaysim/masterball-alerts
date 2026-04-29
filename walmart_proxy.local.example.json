@@ -1,0 +1,4 @@
+{
+  "proxy_url": "http://user:pass@host:port",
+  "enabled": false
+}

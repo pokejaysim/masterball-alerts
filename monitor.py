@@ -20,10 +20,23 @@ import random
 import hashlib
 import signal
 import threading
+import sys
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from settings import MONITOR_DIR, load_config, load_json_with_local_override
+from product_utils import (
+    PROTECTED_RETAILERS,
+    STOCK_BLOCKED,
+    STOCK_UNKNOWN,
+    StockResult,
+    escape_html,
+    normalize_url,
+    product_identifier,
+    retailer_display_name,
+    retailer_from_url,
+    stock_transition,
+)
 
 # Thread-local storage for per-thread HTTP sessions and state
 _thread_local = threading.local()
@@ -52,7 +65,8 @@ try:
     from database import (init_db, get_stock_status, set_stock_status,
                           add_alert, update_timestamp as db_update_timestamp,
                           check_cooldown as db_check_cooldown, set_cooldown as db_set_cooldown,
-                          log_error as db_log_error, increment_daily_stat)
+                          log_error as db_log_error, increment_daily_stat,
+                          get_approved_products)
     USE_DB = True
 except ImportError:
     USE_DB = False
@@ -285,6 +299,7 @@ def take_screenshot(url, name):
 
 # Thread-safe detected prices and message IDs
 _prices_lock = threading.Lock()
+_sellers_lock = threading.Lock()
 _message_ids_lock = threading.Lock()
 
 def set_detected_price(name, price):
@@ -294,6 +309,16 @@ def set_detected_price(name, price):
 def get_detected_price(name, default=None):
     with _prices_lock:
         return _detected_prices.get(name, default)
+
+def set_detected_seller(name, seller):
+    if not seller:
+        return
+    with _sellers_lock:
+        _detected_sellers[name] = seller
+
+def get_detected_seller(name, default=None):
+    with _sellers_lock:
+        return _detected_sellers.get(name, default)
 
 def set_message_id(name, channel_id, dm_id=None):
     with _message_ids_lock:
@@ -309,6 +334,7 @@ def del_message_id(name):
 
 # Track detected prices and "still live" follow-ups
 _detected_prices = {}  # product_name -> price string
+_detected_sellers = {}  # product_name -> seller string
 _followup_queue = []   # list of (check_time, product, url, alert_time)
 _message_ids = {}      # product_name -> (channel_message_id, dm_message_id)
 FOLLOWUP_DELAY = 150   # 2.5 minutes
@@ -397,79 +423,35 @@ _market_prices = load_market_prices()
 def build_alert_message(product, price=None):
     name = product['name']
     url = product['url']
+    retailer = retailer_display_name(url)
+    seller = get_detected_seller(name)
+    product_id = product_identifier(url)
 
-    if 'amazon.ca' in url:
-        retailer = "Amazon CA"
-        asin_match = re.search(r'/dp/([A-Z0-9]+)', url)
-        asin = asin_match.group(1) if asin_match else 'N/A'
-        cart_link = f"https://www.amazon.ca/gp/aws/cart/add.html?ASIN.1={asin}&amp;Quantity.1=1"
-        links = f'<a href="{url}">Product Page</a> | <a href="{cart_link}">Add to Cart</a>'
-        extra = f"\n<b>ASIN</b>\n{asin}\n\n<i>Note: May be Amazon Warehouse (damaged box, sealed product inside). Check listing before purchasing.</i>"
-    elif 'bestbuy.ca' in url:
-        retailer = "Best Buy CA"
-        sku_match = re.search(r'/(\d{8,})', url)
-        links = f'<a href="{url}">Product Page</a>'
-        extra = f"\n<b>SKU</b>\n{sku_match.group(1) if sku_match else 'N/A'}"
-    elif 'walmart.ca' in url:
-        retailer = "Walmart CA"
-        links = f'<a href="{url}">Product Page</a>'
-        extra = ""
-    elif 'costco.ca' in url:
-        retailer = "Costco CA"
-        links = f'<a href="{url}">Product Page</a>'
-        extra = ""
-    elif 'ebgames.ca' in url:
-        retailer = "EB Games CA"
-        links = f'<a href="{url}">Product Page</a>'
-        extra = ""
-    else:
-        retailer = "Unknown"
-        links = f'<a href="{url}">Product Page</a>'
-        extra = ""
+    lines = [
+        f"🟣 <b>{escape_html(retailer)} Restock</b>",
+        "",
+        f"<b>{escape_html(name)}</b>",
+    ]
 
-    hot_items = ['SPC', 'ETB', 'Costco']
-    tag = "🔥 HOT DROP" if any(h in name for h in hot_items) else "⚡ Restock"
+    price_value = price or get_detected_price(name)
+    if price_value:
+        price_text = str(price_value).lstrip("$")
+        lines.append(f"Price: <b>${escape_html(price_text)} CAD</b>")
+    if seller:
+        lines.append(f"Seller: {escape_html(seller)}")
 
-    # Add price if available
-    price_str = ""
-    retail_price_num = None
-    if price:
-        p = str(price).lstrip('$')
-        price_str = f"\n<b>Price</b>\n${p} CAD\n"
-        try:
-            retail_price_num = float(re.sub(r'[^\d.]', '', p))
-        except:
-            pass
-    elif name in _detected_prices:
-        p = str(_detected_prices[name]).lstrip('$')
-        price_str = f"\n<b>Price</b>\n${p} CAD\n"
-        try:
-            retail_price_num = float(re.sub(r'[^\d.]', '', p))
-        except:
-            pass
+    links = [f'<a href="{escape_html(url)}">Product</a>']
+    if retailer_from_url(url) == "amazon" and product_id:
+        cart_link = f"https://www.amazon.ca/gp/aws/cart/add.html?ASIN.1={product_id}&Quantity.1=1"
+        links.append(f'<a href="{escape_html(cart_link)}">Add to Cart</a>')
 
-    # Market price comparison
-    market_str = ""
-    mp = _market_prices.get(name)
-    if mp and mp.get('market_cad'):
-        market_cad = mp['market_cad']
-        market_str = f"\n📊 <b>Market Value:</b> ~${market_cad:.0f} CAD"
-        if retail_price_num and market_cad > retail_price_num:
-            savings = market_cad - retail_price_num
-            pct = int((savings / market_cad) * 100)
-            market_str += f"\n💸 <b>Save {pct}%</b> vs secondary market (${savings:.0f} below resale)"
-
-    return (
-        f"🟣 <b>MasterBall Alerts | {retailer}</b>\n"
-        f"━━━━━━━━━━━━━━━━━\n\n"
-        f"<b>{name}</b>\n\n"
-        f"<b>Type</b>\n{tag}\n"
-        f"{price_str}"
-        f"{market_str}\n"
-        f"{extra}\n\n"
-        f"<b>Links</b>\n{links}\n\n"
-        f"⚡ <i>Act fast — limited stock!</i>"
-    )
+    lines.extend([
+        "",
+        " | ".join(links),
+        "",
+        "<i>Act fast. Limited stock can vanish quickly.</i>",
+    ])
+    return "\n".join(lines)
 
 
 
@@ -543,18 +525,19 @@ def process_followups(stock_status, bot_token, channel_id):
                 live_sec = live_duration_sec % 60
                 
                 # Build sold-out message
-                retailer = 'Amazon CA' if 'amazon.ca' in url else 'Walmart CA' if 'walmart.ca' in url else 'Best Buy' if 'bestbuy.ca' in url else 'Costco' if 'costco.ca' in url else 'EB Games'
+                retailer = retailer_display_name(url)
                 price_str = _detected_prices.get(name, '')
-                price_line = f" | {price_str}" if price_str else ""
+                price_line = f" | ${escape_html(price_str)} CAD" if price_str else ""
                 
                 time_str = datetime.fromtimestamp(alert_time).strftime('%I:%M %p')
                 duration_str = f"{live_min}m {live_sec}s" if live_min > 0 else f"{live_sec}s"
                 
                 sold_out_msg = (
-                    f"🔴 <b>[SOLD OUT]</b> {name}\n\n"
-                    f"<b>Retailer:</b> {retailer}{price_line}\n"
-                    f"<b>Was live:</b> {time_str} ({duration_str})\n\n"
-                    f"<a href=\"{url}\">View Product</a>"
+                    f"🔴 <b>SOLD OUT</b>\n\n"
+                    f"<b>{escape_html(name)}</b>\n"
+                    f"{escape_html(retailer)}{price_line}\n"
+                    f"Live around {escape_html(time_str)} for {escape_html(duration_str)}\n\n"
+                    f"<a href=\"{escape_html(url)}\">Product</a>"
                 )
                 
                 # Edit the channel message
@@ -650,6 +633,77 @@ def cffi_get_with_fallback(url, timeout=15):
 
 
 # ---------------------------------------------------------------------------
+# Selective browser lane for protected retailers
+# ---------------------------------------------------------------------------
+
+_browser_lane_lock = threading.Lock()
+_browser_backoff = {}  # normalized_url -> {"next_allowed": float, "failures": int}
+_degraded_notices = {}  # retailer -> last_notice_time
+BROWSER_MIN_INTERVAL_SECONDS = 180
+BROWSER_MAX_BACKOFF_SECONDS = 3600
+
+
+def _browser_lane_allowed(product):
+    url = product.get("url", "")
+    retailer = retailer_from_url(url)
+    if retailer not in PROTECTED_RETAILERS:
+        return False, "not protected"
+    if product.get("priority") != "high":
+        return False, "not high priority"
+
+    key = normalize_url(url)
+    state = _browser_backoff.get(key, {})
+    now = time.time()
+    if now < state.get("next_allowed", 0):
+        return False, f"browser backoff {int(state['next_allowed'] - now)}s"
+    return True, None
+
+
+def _record_browser_lane_result(url, blocked=False):
+    key = normalize_url(url)
+    now = time.time()
+    state = _browser_backoff.setdefault(key, {"next_allowed": 0, "failures": 0})
+    if blocked:
+        state["failures"] = min(int(state.get("failures", 0)) + 1, 4)
+        backoff = min(900 * state["failures"], BROWSER_MAX_BACKOFF_SECONDS)
+        state["next_allowed"] = now + backoff
+    else:
+        state["failures"] = 0
+        state["next_allowed"] = now + BROWSER_MIN_INTERVAL_SECONDS
+
+
+def check_walmart_browser_lane(product):
+    allowed, reason = _browser_lane_allowed(product)
+    if not allowed:
+        return StockResult.blocked(reason=reason) if "backoff" in str(reason) else StockResult.unknown(reason=reason)
+
+    if not _browser_lane_lock.acquire(blocking=False):
+        return StockResult.unknown(reason="browser lane busy")
+
+    try:
+        from browser_checker import check_walmart_browser
+
+        in_stock, seller, error = check_walmart_browser(product["url"], headless=True)
+        blocked = bool(error and "captcha" in error.lower())
+        _record_browser_lane_result(product["url"], blocked=blocked)
+        if blocked:
+            return StockResult.blocked(reason=error)
+        if error and not in_stock:
+            return StockResult.unknown(reason=error, seller=seller)
+        if in_stock:
+            return StockResult.in_stock(seller=seller, reason="browser")
+        return StockResult.out_of_stock(seller=seller, reason="browser")
+    except ImportError as e:
+        _record_browser_lane_result(product["url"], blocked=True)
+        return StockResult.unknown(reason=f"browser dependency missing: {e}")
+    except Exception as e:
+        _record_browser_lane_result(product["url"], blocked=True)
+        return StockResult.unknown(reason=f"browser check failed: {e}")
+    finally:
+        _browser_lane_lock.release()
+
+
+# ---------------------------------------------------------------------------
 # Site-specific stock checkers
 # ---------------------------------------------------------------------------
 
@@ -669,9 +723,13 @@ def check_amazon(url, product=None):
         response = requests.get(url, headers=headers, timeout=15)
         if response.status_code != 200:
             log(f"  ⚠️  Amazon returned {response.status_code}")
-            return False
+            if response.status_code in (403, 429, 503):
+                return StockResult.blocked(reason=f"Amazon returned {response.status_code}")
+            return StockResult.unknown(reason=f"Amazon returned {response.status_code}")
 
         html = response.text.lower()
+        if 'captcha' in html[:5000] or 'enter the characters you see below' in html[:5000]:
+            return StockResult.blocked(reason="Amazon CAPTCHA")
         soup = BeautifulSoup(response.text, 'html.parser')
 
         # Definite OOS signals
@@ -680,7 +738,7 @@ def check_amazon(url, product=None):
                        'sign up for restock alerts', 'email me when available']
         for signal in oos_signals:
             if signal in html:
-                return False
+                return StockResult.out_of_stock(reason=signal)
 
         # Seller check — Amazon uses multiple formats:
         # "Sold by X" spans, "Ships from and sold by Amazon", "Shipper / Seller  X"
@@ -721,12 +779,13 @@ def check_amazon(url, product=None):
                 log(f"  ✅ Sold by: {seller_name} (trusted)")
             else:
                 log(f"  ⚠️  In stock but sold by '{seller_name}' (third-party) — skipping")
-                return False
+                return StockResult.marketplace(seller=seller_name, reason="third-party seller")
         elif ships_sold_by_amazon:
+            seller_name = "Amazon.ca"
             log(f"  ✅ Ships from and sold by Amazon.ca")
         else:
             log(f"  ⚠️  No trusted seller detected — skipping")
-            return False
+            return StockResult.unknown(reason="No trusted seller detected")
 
         # Extract price
         price_el = soup.find('span', class_='a-price-whole')
@@ -741,16 +800,16 @@ def check_amazon(url, product=None):
         # In-stock signals
         avail_div = soup.find('div', {'id': 'availability'})
         if avail_div and 'in stock' in avail_div.get_text(strip=True).lower():
-            return True
+            return StockResult.in_stock(price=get_detected_price(product['name'] if product else url), seller=seller_name)
 
         buy_box = soup.find('input', {'id': 'add-to-cart-button'})
         if buy_box and 'see all buying options' not in html:
-            return True
+            return StockResult.in_stock(price=get_detected_price(product['name'] if product else url), seller=seller_name)
 
-        return False
+        return StockResult.unknown(reason="No stock signal found", seller=seller_name)
     except Exception as e:
         log(f"  ❌ Error checking Amazon: {e}")
-        return False
+        return StockResult.unknown(reason=str(e))
 
 
 # --- Camoufox browser for Walmart ---
@@ -785,18 +844,35 @@ def check_walmart_camoufox(url):
             return None
     return None
 
-def check_walmart(url):
+def check_walmart(url, product=None):
     TRUSTED_SELLERS = ['walmart', 'walmart canada', 'walmart.ca']
     try:
-        html = check_walmart_camoufox(url)
-        if not html:
-            log(f"  ⚠️  Walmart: Camoufox returned no data")
-            return False
+        response = cffi_get_with_fallback(url)
+        html = response.text if response else ""
+        if not response:
+            log(f"  ⚠️  Walmart: no response")
+            result = StockResult.blocked(reason="no response")
+            if product:
+                browser_result = check_walmart_browser_lane(product)
+                return browser_result if not browser_result.is_indeterminate else result
+            return result
+
+        if response.status_code in (403, 429, 520, 530):
+            log(f"  ⚠️  Walmart blocked/status {response.status_code}")
+            result = StockResult.blocked(reason=f"status {response.status_code}")
+            if product:
+                browser_result = check_walmart_browser_lane(product)
+                return browser_result if not browser_result.is_indeterminate else result
+            return result
         
         # Check for CAPTCHA (only if page is small = blocked)
         if len(html) < 15000 and 'captcha' in html.lower():
             log(f"  ⚠️  Walmart CAPTCHA — Camoufox blocked")
-            return False
+            result = StockResult.blocked(reason="Walmart CAPTCHA")
+            if product:
+                browser_result = check_walmart_browser_lane(product)
+                return browser_result if not browser_result.is_indeterminate else result
+            return result
         
         json_match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
         if json_match:
@@ -804,25 +880,33 @@ def check_walmart(url):
                 data_str = json.dumps(json.loads(json_match.group(1)))
                 seller_match = re.search(r'"sellerName"\s*:\s*"([^"]+)"', data_str)
                 seller_name = seller_match.group(1) if seller_match else ''
+                price_match = re.search(r'"currentPrice"\s*:\s*\{[^}]*"price"\s*:\s*([0-9.]+)', data_str)
+                price = price_match.group(1) if price_match else None
+                if product and price:
+                    set_detected_price(product["name"], price)
 
                 is_trusted = any(t in seller_name.lower() for t in TRUSTED_SELLERS)
                 is_in_stock = '"availabilityStatus":"IN_STOCK"' in data_str or '"availabilityStatus": "IN_STOCK"' in data_str
 
                 if not is_in_stock:
-                    return False
+                    return StockResult.out_of_stock(price=price, seller=seller_name)
                 if is_trusted:
                     log(f"  ✅ Walmart: In stock | Seller: {seller_name} (trusted)")
-                    return True
+                    return StockResult.in_stock(price=price, seller=seller_name)
                 else:
                     log(f"  ⚠️  In stock but sold by '{seller_name}' (marketplace) — skipping")
-                    return False
+                    return StockResult.marketplace(price=price, seller=seller_name, reason="marketplace seller")
             except json.JSONDecodeError:
                 pass
 
-        return False
+        result = StockResult.unknown(reason="Walmart JSON not found")
+        if product:
+            browser_result = check_walmart_browser_lane(product)
+            return browser_result if not browser_result.is_indeterminate else result
+        return result
     except Exception as e:
         log(f"  ❌ Error checking Walmart: {e}")
-        return False
+        return StockResult.unknown(reason=str(e))
 
 
 def check_bestbuy(url):
@@ -830,38 +914,46 @@ def check_bestbuy(url):
     try:
         sku_match = re.search(r'/(\d{8,})(?:\?|$|#)', url)
         if not sku_match:
-            return False
+            return StockResult.unknown(reason="SKU not found")
         sku = sku_match.group(1)
 
         api_url = f"https://www.bestbuy.ca/api/v2/json/product/{sku}?lang=en-CA"
         response = get_session().get(api_url, timeout=15)
         if response.status_code != 200:
-            return False
+            if response.status_code in (403, 429, 503):
+                return StockResult.blocked(reason=f"Best Buy API returned {response.status_code}")
+            return StockResult.unknown(reason=f"Best Buy API returned {response.status_code}")
 
         data = response.json()
         seller = data.get('seller', {})
         seller_name = seller.get('name', '').lower() if seller else ''
+        price = data.get('salePrice', data.get('regularPrice', 0))
 
         if seller_name and not any(t in seller_name for t in TRUSTED_SELLERS):
             log(f"  ⚠️  In stock but sold by '{seller.get('name', 'unknown')}' (marketplace) — skipping")
-            return False
+            return StockResult.marketplace(price=price, seller=seller.get('name', 'unknown'), reason="marketplace seller")
 
         avail = data.get('availability', {})
         if avail.get('buttonState', '').lower() == 'addtocart' and data.get('isPurchasable') and avail.get('isAvailableOnline'):
-            price = data.get('salePrice', data.get('regularPrice', 0))
             log(f"  ✅ Best Buy: In stock | ${price}")
-            return True
-        return False
+            return StockResult.in_stock(price=price, seller=seller.get('name', 'Best Buy') if seller else "Best Buy")
+        button_state = str(avail.get('buttonState', '')).lower()
+        if 'preorder' in button_state or 'pre-order' in button_state:
+            return StockResult.preorder(price=price, reason=button_state)
+        return StockResult.out_of_stock(price=price, seller=seller.get('name') if seller else None)
     except Exception as e:
         log(f"  ❌ Error checking Best Buy: {e}")
-        return False
+        return StockResult.unknown(reason=str(e))
 
 
 def check_costco(url):
     try:
         response = cffi_get_with_fallback(url)
         if not response or response.status_code != 200:
-            return False
+            status = response.status_code if response else "no response"
+            if status in (403, 429, 503):
+                return StockResult.blocked(reason=f"Costco returned {status}")
+            return StockResult.unknown(reason=f"Costco returned {status}")
 
         ld_matches = re.findall(r'<script[^>]*type="application/ld\+json"[^>]*>(.*?)</script>', response.text, re.DOTALL)
         for m in ld_matches:
@@ -869,57 +961,64 @@ def check_costco(url):
                 data = json.loads(m)
                 if isinstance(data, dict) and 'offers' in data:
                     availability = data['offers'].get('availability', '')
+                    price = data['offers'].get('price')
                     if 'InStock' in availability:
-                        log(f"  ✅ Costco: In stock | ${data['offers'].get('price', '?')}")
-                        return True
+                        log(f"  ✅ Costco: In stock | ${price or '?'}")
+                        return StockResult.in_stock(price=price, seller="Costco")
                     elif 'OutOfStock' in availability:
-                        return False
+                        return StockResult.out_of_stock(price=price, seller="Costco")
             except:
                 continue
 
         if len(response.text) < 5000:
             log(f"  ⚠️  Costco may have blocked request")
-        return False
+            return StockResult.blocked(reason="small response")
+        return StockResult.unknown(reason="No Costco stock metadata")
     except Exception as e:
         log(f"  ❌ Error checking Costco: {e}")
-        return False
+        return StockResult.unknown(reason=str(e))
 
 
 def check_ebgames(url):
     try:
         response = cffi_get_with_fallback(url)
         if not response or response.status_code != 200:
-            return False
+            status = response.status_code if response else "no response"
+            if status in (403, 429, 503):
+                return StockResult.blocked(reason=f"EB Games returned {status}")
+            return StockResult.unknown(reason=f"EB Games returned {status}")
 
         html = response.text.lower()
+        price_match = re.search(r'\$(\d+(?:\.\d{2})?)', response.text)
+        price = price_match.group(1) if price_match else None
         if 'pre-order' in html or 'preorder' in html:
-            return False
+            return StockResult.preorder(price=price, reason="preorder")
         if 'out of stock' in html or 'sold out' in html or 'unavailable' in html:
-            return False
+            return StockResult.out_of_stock(price=price, seller="GameStop/EB Games")
         if 'add to cart' in html:
             log(f"  ✅ EB Games: In stock!")
-            return True
-        return False
+            return StockResult.in_stock(price=price, seller="GameStop/EB Games")
+        return StockResult.unknown(price=price, reason="No EB Games stock signal")
     except Exception as e:
         log(f"  ❌ Error checking EB Games: {e}")
-        return False
+        return StockResult.unknown(reason=str(e))
 
 
 def check_generic(url):
     try:
         response = get_session().get(url, timeout=15)
         if response.status_code != 200:
-            return False
+            return StockResult.unknown(reason=f"status {response.status_code}")
         html = response.text.lower()
         for p in ['out of stock', 'sold out', 'currently unavailable', 'not available']:
             if p in html:
-                return False
+                return StockResult.out_of_stock(reason=p)
         for p in ['add to cart', 'add to basket', 'buy now', 'in stock']:
             if p in html:
-                return True
-        return False
-    except:
-        return False
+                return StockResult.in_stock(reason=p)
+        return StockResult.unknown(reason="No generic stock signal")
+    except Exception as e:
+        return StockResult.unknown(reason=str(e))
 
 
 def check_product(product):
@@ -927,13 +1026,15 @@ def check_product(product):
     if 'amazon.ca' in url:
         return check_amazon(url, product)
     elif 'walmart.ca' in url:
-        return check_walmart(url)
+        return check_walmart(url, product)
     elif 'bestbuy.ca' in url:
         return check_bestbuy(url)
     elif 'costco.ca' in url:
         return check_costco(url)
     elif 'ebgames.ca' in url:
         return check_ebgames(url)
+    elif 'pokemoncenter.com' in url:
+        return StockResult.blocked(reason="Pokemon Center is discovery/manual-review only")
     else:
         return check_generic(url)
 
@@ -943,11 +1044,53 @@ def check_product_wrapper(product):
     name = product['name']
     try:
         result = check_product(product)
+        if isinstance(result, bool):
+            result = StockResult.in_stock() if result else StockResult.out_of_stock(reason="legacy boolean")
+        if result.price:
+            set_detected_price(name, result.price)
+        if result.seller:
+            set_detected_seller(name, result.seller)
         update_timestamp(name)
         return (product, result)
     except Exception as e:
         log(f"  ❌ Error checking {name}: {e}")
-        return (product, False)
+        return (product, StockResult.unknown(reason=str(e)))
+
+
+def load_enabled_products(config=None):
+    """Merge checked-in products with approved discovery products."""
+    if config is None:
+        config = load_config()
+
+    products = [p for p in config.get('products', []) if p.get('enabled', True)]
+    seen = {normalize_url(p.get("url", "")) for p in products}
+
+    if USE_DB:
+        try:
+            for product in get_approved_products():
+                normalized = normalize_url(product.get("url", ""))
+                if normalized and normalized not in seen:
+                    products.append(product)
+                    seen.add(normalized)
+        except Exception as e:
+            log(f"⚠️  Failed to load approved discovery products: {e}")
+
+    return products
+
+
+def notify_degraded(retailer, reason, bot_token, chat_id):
+    if not bot_token or not chat_id:
+        return
+    now = time.time()
+    key = retailer or "unknown"
+    if now - _degraded_notices.get(key, 0) < 900:
+        return
+    _degraded_notices[key] = now
+    send_telegram(
+        bot_token,
+        chat_id,
+        f"⚠️ <b>{escape_html(retailer_display_name(key))} checks degraded</b>\n\n{escape_html(reason or 'Blocked or unknown response')}\n\nStock state was preserved.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -969,13 +1112,14 @@ def monitor_loop():
     bot_token = config.get('telegram_bot_token', '')
     chat_id = config.get('telegram_chat_id', '')
     channel_id = config.get('telegram_channel_id', '')
+    stock_alert_chat_id = channel_id or chat_id
     use_telegram = bool(bot_token and chat_id)
     check_interval = config.get('check_interval', 30)
 
-    enabled_products = [p for p in config['products'] if p.get('enabled', True)]
+    enabled_products = load_enabled_products(config)
     
     # Restore follow-up state from disk (survives restarts)
-    load_followup_state(config)
+    load_followup_state({"products": enabled_products})
 
     log("🤖 MasterBall Alerts Monitor v3 Started!")
     log(f"📱 Notifications: {'Telegram' if use_telegram else 'Desktop only'}")
@@ -1009,6 +1153,7 @@ def monitor_loop():
     log(f"🔄 Max workers: {MAX_WORKERS}")
     last_health_ping = time.time()
     last_config_check = time.time()
+    last_review_poll = 0
     error_counts = {}  # Track errors per retailer per cycle
 
     while True:
@@ -1028,37 +1173,62 @@ def monitor_loop():
                 for future in as_completed(futures):
                     all_results.append(future.result())
             
-            # Check Walmart products sequentially (Camoufox is not thread-safe)
+            # Check Walmart products sequentially because protected-browser fallback is single-lane.
             for p in walmart_products:
                 result = check_product_wrapper(p)
                 all_results.append(result)
                 time.sleep(2)  # Delay between Walmart checks to avoid detection
             
-            for product, is_in_stock in all_results:
-                    name = product['name']
-                    url = product['url']
-                    prev_status = stock_status.get(name, False)
+            for product, result in all_results:
+                name = product['name']
+                url = product['url']
+                prev_status = stock_status.get(name, False)
+                new_status, transition = stock_transition(prev_status, result)
 
-                    if is_in_stock and not prev_status:
-                        if check_alert_cooldown(name):
-                                                fire_alert(product, url, is_hot=False, bot_token=bot_token, channel_id=channel_id, use_telegram=use_telegram)
-                        else:
-                            log(f"🔇 Alert suppressed (cooldown): {name}")
-                    elif not is_in_stock and prev_status:
-                        log(f"📉 Out of stock: {name}")
-                        if USE_DB:
-                            add_alert(name, 'out_of_stock', url=url)
-                    elif is_in_stock:
-                        log(f"✅ Still in stock: {name}")
-
-                    stock_status[name] = is_in_stock
+                if result.status == STOCK_BLOCKED:
+                    retailer = retailer_from_url(url)
+                    reason = result.reason or "blocked"
+                    log(f"🛡️  Preserving state for {name}: {reason}")
                     if USE_DB:
-                        set_stock_status(name, is_in_stock)
+                        increment_daily_stat('captchas_hit')
+                        db_log_error(retailer, 'blocked', reason)
+                    notify_degraded(retailer, reason, bot_token, chat_id)
+                elif result.status == STOCK_UNKNOWN:
+                    log(f"❔ Unknown stock state for {name}: {result.reason or 'no reason'}")
+                    if USE_DB:
+                        increment_daily_stat('checks_failed')
+                elif transition == "became_in_stock":
+                    if check_alert_cooldown(name):
+                        fire_alert(product, url, is_hot=False, bot_token=bot_token, channel_id=stock_alert_chat_id, use_telegram=use_telegram)
+                    else:
+                        log(f"🔇 Alert suppressed (cooldown): {name}")
+                elif transition == "became_out_of_stock":
+                    log(f"📉 Out of stock: {name}")
+                    if USE_DB:
+                        add_alert(name, 'out_of_stock', url=url)
+                elif transition == "still_in_stock":
+                    log(f"✅ Still in stock: {name}")
+
+                stock_status[name] = new_status
+                if USE_DB and not result.is_indeterminate:
+                    set_stock_status(name, new_status)
 
             # Process "still live" follow-ups
-            process_followups(stock_status, bot_token, channel_id)
+            process_followups(stock_status, bot_token, stock_alert_chat_id)
             if _followup_queue or _message_ids:
                 save_followup_state()
+
+            # Telegram owner commands for discovery review (/approve, /ignore, /pending)
+            if use_telegram and time.time() - last_review_poll > 20:
+                try:
+                    from telegram_review import process_review_commands
+                    changed = process_review_commands(bot_token, chat_id, log_func=log)
+                    if changed:
+                        enabled_products = load_enabled_products()
+                        log(f"🔄 Discovery products reloaded: {len(enabled_products)} active products")
+                except Exception as e:
+                    log(f"⚠️  Review command polling failed: {e}")
+                last_review_poll = time.time()
 
             # Save JSON as backup (dashboard still reads from it)
             save_json(STOCK_STATUS_FILE, stock_status)
@@ -1067,13 +1237,16 @@ def monitor_loop():
             if time.time() - last_config_check > 300:
                 try:
                     new_config = load_config()
-                    new_enabled = [p for p in new_config['products'] if p.get('enabled', True)]
+                    new_enabled = load_enabled_products(new_config)
                     if len(new_enabled) != len(enabled_products):
-                        log(f"🔄 Config reloaded: {len(new_enabled)} products (was {len(enabled_products)})")
-                        enabled_products = new_enabled
-                        high_priority = [p for p in enabled_products if p.get('priority') == 'high']
-                        normal_priority = [p for p in enabled_products if p.get('priority') != 'high']
-                        check_interval = new_config.get('check_interval', 30)
+                        log(f"🔄 Products reloaded: {len(new_enabled)} products (was {len(enabled_products)})")
+                    enabled_products = new_enabled
+                    bot_token = new_config.get('telegram_bot_token', '')
+                    chat_id = new_config.get('telegram_chat_id', '')
+                    channel_id = new_config.get('telegram_channel_id', '')
+                    stock_alert_chat_id = channel_id or chat_id
+                    use_telegram = bool(bot_token and chat_id)
+                    check_interval = new_config.get('check_interval', 30)
                 except:
                     pass
                 last_config_check = time.time()
@@ -1099,17 +1272,22 @@ def monitor_loop():
                     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
                         hot_futures = {executor.submit(check_product_wrapper, p): p for p in hot_products}
                         for future in as_completed(hot_futures):
-                            product, is_in_stock = future.result()
+                            product, result = future.result()
                             name = product['name']
                             url = product['url']
                             prev_status = stock_status.get(name, False)
-                            if is_in_stock and not prev_status:
+                            new_status, transition = stock_transition(prev_status, result)
+                            if result.is_indeterminate:
+                                log(f"🛡️  Hot check preserved state for {name}: {result.reason or result.status}")
+                                continue
+                            if transition == "became_in_stock":
                                 if check_alert_cooldown(name):
-                                                            fire_alert(product, url, is_hot=True, bot_token=bot_token, channel_id=channel_id, use_telegram=use_telegram)
-                            elif not is_in_stock and prev_status:
+                                    fire_alert(product, url, is_hot=True, bot_token=bot_token, channel_id=stock_alert_chat_id, use_telegram=use_telegram)
+                            elif transition == "became_out_of_stock":
                                 stock_status[name] = False
-                            if is_in_stock:
-                                stock_status[name] = True
+                            stock_status[name] = new_status
+                            if USE_DB:
+                                set_stock_status(name, new_status)
                     if USE_DB:
                         increment_daily_stat('checks_total')
             else:
@@ -1134,5 +1312,30 @@ def monitor_loop():
             time.sleep(10)
 
 
+def test_product(url):
+    """Run a single URL through the checker and print a structured result."""
+    if USE_DB:
+        init_db()
+    product = {
+        "name": f"Test Product - {retailer_display_name(url)}",
+        "url": url,
+        "enabled": True,
+        "priority": "high",
+    }
+    result = check_product(product)
+    if isinstance(result, bool):
+        result = StockResult.in_stock() if result else StockResult.out_of_stock(reason="legacy boolean")
+    print(json.dumps({
+        "product": product,
+        "result": result.as_dict(),
+        "normalized_url": normalize_url(url),
+        "retailer": retailer_from_url(url),
+        "product_id": product_identifier(url),
+    }, indent=2))
+
+
 if __name__ == "__main__":
-    monitor_loop()
+    if len(sys.argv) >= 3 and sys.argv[1] == "--test-product":
+        test_product(sys.argv[2])
+    else:
+        monitor_loop()

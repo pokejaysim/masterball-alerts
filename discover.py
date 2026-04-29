@@ -1,234 +1,361 @@
 #!/usr/bin/env python3
-"""
-MasterBall Alerts — New Product Discovery
-Scans Walmart.ca and Costco.ca for new Pokemon TCG listings
-and alerts via Telegram when new products are found.
-"""
+"""Discover new Canada-first Pokemon TCG sealed products for review."""
 
+import argparse
 import json
-import os
 import re
 import time
-import requests
 from datetime import datetime
+from urllib.parse import urljoin
 
-from settings import MONITOR_DIR, load_config
+import requests
+from bs4 import BeautifulSoup
 
-KNOWN_FILE = os.path.join(MONITOR_DIR, "known_products.json")
+from database import add_or_update_candidate, expire_old_candidates, get_approved_products, init_db
+from product_utils import (
+    candidate_id,
+    default_priority,
+    escape_html,
+    is_pokemon_tcg_sealed_candidate,
+    normalize_url,
+    product_identifier,
+    product_name_for_candidate,
+    retailer_display_name,
+    retailer_from_url,
+)
+from settings import load_config
 
-def load_known():
-    if os.path.exists(KNOWN_FILE):
-        with open(KNOWN_FILE) as f:
-            return json.load(f)
-    return {"urls": []}
 
-def save_known(data):
-    with open(KNOWN_FILE, 'w') as f:
-        json.dump(data, f, indent=2)
+USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 
 def log(msg):
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}")
 
+
 def send_telegram(bot_token, chat_id, message):
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        requests.post(url, data={'chat_id': chat_id, 'text': message, 'parse_mode': 'HTML', 'disable_web_page_preview': False}, timeout=10)
-    except:
-        pass
+        requests.post(
+            url,
+            data={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": False,
+            },
+            timeout=10,
+        )
+    except Exception as e:
+        log(f"  ⚠️ Telegram review message failed: {e}")
 
-# ── Walmart.ca Discovery ──
+
+def fetch(url, prefer_cffi=False, timeout=20):
+    headers = {
+        "User-Agent": USER_AGENT,
+        "Accept-Language": "en-CA,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+    if prefer_cffi:
+        try:
+            from curl_cffi import requests as cffi_requests
+
+            return cffi_requests.get(url, impersonate="chrome131", headers=headers, timeout=timeout)
+        except Exception:
+            pass
+    return requests.get(url, headers=headers, timeout=timeout)
+
+
+def html_links(html, base_url, include_hosts=None):
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    for anchor in soup.find_all("a", href=True):
+        href = urljoin(base_url, anchor["href"]).split("?")[0]
+        if include_hosts and not any(host in href for host in include_hosts):
+            continue
+        text = anchor.get_text(" ", strip=True)
+        links.append((href, text))
+    return links
+
+
+def build_candidate(url, raw_name="", source="", confidence=0.7, reason=None):
+    retailer = retailer_from_url(url)
+    if retailer == "generic":
+        return None
+    name = product_name_for_candidate(raw_name, url)
+    if not is_pokemon_tcg_sealed_candidate(name, url):
+        return None
+
+    normalized = normalize_url(url)
+    return {
+        "id": candidate_id(normalized),
+        "retailer": retailer,
+        "name": name,
+        "url": normalized,
+        "product_id": product_identifier(normalized),
+        "source": source,
+        "confidence": confidence,
+        "status": "pending",
+        "priority": default_priority(name, normalized, source),
+        "reason": reason,
+    }
+
+
+def dedupe(candidates):
+    seen = set()
+    unique = []
+    for candidate in candidates:
+        if not candidate:
+            continue
+        key = normalize_url(candidate["url"])
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
 
 def discover_walmart():
-    """Scan Walmart.ca Pokemon TCG category pages for products."""
-    from curl_cffi import requests as cffi_requests
-
-    category_urls = [
+    urls = [
         "https://www.walmart.ca/en/browse/toys/trading-cards/pokemon-cards/10011_31745_6000204969672",
-        "https://www.walmart.ca/en/browse/toys/trading-cards/pokemon-cards/pokemon-booster-blister-packs/10011_31745_6000204969672_6000203427077",
-        "https://www.walmart.ca/en/browse/toys/trading-cards/pokemon-cards/pokemon-box-sets/10011_31745_6000204969672_6000204969783",
+        "https://www.walmart.ca/search?q=pokemon%20tcg",
+        "https://www.walmart.ca/search?q=pokemon%20booster%20bundle",
+        "https://www.walmart.ca/search?q=pokemon%20elite%20trainer%20box",
     ]
-
-    products = []
-    for cat_url in category_urls:
+    candidates = []
+    for page_url in urls:
         try:
-            r = cffi_requests.get(cat_url, impersonate="chrome131", timeout=15)
-            if r.status_code != 200:
+            response = fetch(page_url, prefer_cffi=True)
+            if response.status_code != 200:
+                log(f"  ⚠️ Walmart discovery status {response.status_code}: {page_url}")
                 continue
+            html = response.text
+            for href, text in html_links(html, page_url, include_hosts=["walmart.ca"]):
+                if "/en/ip/" in href:
+                    candidates.append(build_candidate(href, text, "walmart_search", 0.78))
 
-            html = r.text
-
-            # Extract __NEXT_DATA__ for product listings
             json_match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
             if json_match:
-                data = json.loads(json_match.group(1))
-                data_str = json.dumps(data)
-
-                # Find product URLs - Walmart uses /en/ip/SLUG/PRODUCT_ID pattern
-                url_matches = re.findall(r'/en/ip/[^"]+', data_str)
-                for url_path in url_matches:
-                    full_url = f"https://www.walmart.ca{url_path}"
-                    # Clean tracking params
-                    full_url = full_url.split('?')[0]
-                    if full_url not in products:
-                        products.append(full_url)
-
-            # Also try extracting from raw HTML links
-            link_matches = re.findall(r'href="(/en/ip/[^"?]+)"', html)
-            for path in link_matches:
-                full_url = f"https://www.walmart.ca{path}"
-                if full_url not in products:
-                    products.append(full_url)
-
+                data_str = json.dumps(json.loads(json_match.group(1)))
+                for path in set(re.findall(r'(/en/ip/[^"?#]+)', data_str)):
+                    candidates.append(build_candidate(urljoin("https://www.walmart.ca", path), "", "walmart_next_data", 0.82))
         except Exception as e:
             log(f"  ⚠️ Walmart discovery error: {e}")
-
-    # Filter to Pokemon-related only
-    pokemon_products = [u for u in products if any(kw in u.lower() for kw in ['pokemon', 'pok-mon', 'pokmon', 'prismatic', 'ascended', 'tcg'])]
-
-    log(f"  Walmart: Found {len(pokemon_products)} Pokemon products")
-    return pokemon_products
+        time.sleep(1)
+    return dedupe(candidates)
 
 
 def discover_costco():
-    """Scan Costco.ca for Pokemon TCG products."""
-    from curl_cffi import requests as cffi_requests
-
-    search_urls = [
+    urls = [
         "https://www.costco.ca/CatalogSearch?keyword=pokemon+tcg",
-        "https://www.costco.ca/CatalogSearch?keyword=pokemon+trading+card",
+        "https://www.costco.ca/CatalogSearch?keyword=pokemon+cards",
+        "https://www.costco.ca/CatalogSearch?keyword=pokemon+elite+trainer",
     ]
-
-    products = []
-    for search_url in search_urls:
+    candidates = []
+    for page_url in urls:
         try:
-            r = cffi_requests.get(search_url, impersonate="chrome131", timeout=15)
-            if r.status_code != 200:
+            response = fetch(page_url, prefer_cffi=True)
+            if response.status_code != 200:
+                log(f"  ⚠️ Costco discovery status {response.status_code}: {page_url}")
                 continue
-
-            html = r.text
-
-            # Costco product URLs: /p/-/product-name/PRODUCT_ID
-            url_matches = re.findall(r'href="(/p/-/[^"]+)"', html)
-            for path in url_matches:
-                full_url = f"https://www.costco.ca{path}"
-                full_url = full_url.split('?')[0]
-                if full_url not in products and 'pokemon' in full_url.lower():
-                    products.append(full_url)
-
-            # Also check JSON-LD or data attributes
-            url_matches2 = re.findall(r'"url"\s*:\s*"(https://www\.costco\.ca/p/-/[^"]+)"', html)
-            for url in url_matches2:
-                url = url.split('?')[0]
-                if url not in products:
-                    products.append(url)
-
+            for href, text in html_links(response.text, page_url, include_hosts=["costco.ca"]):
+                if "/p/" in href or ".product." in href:
+                    candidates.append(build_candidate(href, text, "costco_search", 0.82))
         except Exception as e:
             log(f"  ⚠️ Costco discovery error: {e}")
+        time.sleep(1)
+    return dedupe(candidates)
 
-    log(f"  Costco: Found {len(products)} Pokemon products")
-    return products
+
+def discover_bestbuy():
+    urls = [
+        "https://www.bestbuy.ca/en-ca/search?search=pokemon%20tcg",
+        "https://www.bestbuy.ca/en-ca/search?search=pokemon%20elite%20trainer%20box",
+        "https://www.bestbuy.ca/en-ca/search?search=pokemon%20booster%20bundle",
+    ]
+    candidates = []
+    for page_url in urls:
+        try:
+            response = fetch(page_url)
+            if response.status_code != 200:
+                log(f"  ⚠️ Best Buy discovery status {response.status_code}: {page_url}")
+                continue
+            for href, text in html_links(response.text, page_url, include_hosts=["bestbuy.ca"]):
+                if "/en-ca/product/" in href:
+                    candidates.append(build_candidate(href, text, "bestbuy_search", 0.88))
+        except Exception as e:
+            log(f"  ⚠️ Best Buy discovery error: {e}")
+        time.sleep(1)
+    return dedupe(candidates)
+
+
+def discover_ebgames():
+    urls = [
+        "https://www.ebgames.ca/SearchResult/QuickSearch?q=pokemon%20tcg",
+        "https://www.ebgames.ca/SearchResult/QuickSearch?q=pokemon%20trading%20card",
+        "https://www.gamestop.ca/SearchResult/QuickSearch?q=pokemon%20tcg",
+    ]
+    candidates = []
+    for page_url in urls:
+        try:
+            response = fetch(page_url, prefer_cffi=True)
+            if response.status_code != 200:
+                log(f"  ⚠️ EB Games discovery status {response.status_code}: {page_url}")
+                continue
+            for href, text in html_links(response.text, page_url, include_hosts=["ebgames.ca", "gamestop.ca"]):
+                if "/Games/" in href or "/Trading%20Cards/" in href:
+                    candidates.append(build_candidate(href, text, "ebgames_search", 0.82))
+        except Exception as e:
+            log(f"  ⚠️ EB Games discovery error: {e}")
+        time.sleep(1)
+    return dedupe(candidates)
 
 
 def discover_amazon():
-    """Scan Amazon.ca for new Pokemon TCG products via search."""
-    search_urls = [
-        "https://www.amazon.ca/s?k=pokemon+prismatic+evolutions&rh=n%3A110218011",
-        "https://www.amazon.ca/s?k=pokemon+ascended+heroes+tcg",
+    urls = [
+        "https://www.amazon.ca/s?k=pokemon+tcg+elite+trainer+box",
+        "https://www.amazon.ca/s?k=pokemon+tcg+booster+bundle",
+        "https://www.amazon.ca/s?k=pokemon+tcg+ultra+premium+collection",
     ]
-
-    products = []
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept-Language': 'en-CA',
-    }
-
-    for search_url in search_urls:
+    candidates = []
+    for page_url in urls:
         try:
-            r = requests.get(search_url, headers=headers, timeout=15)
-            if r.status_code != 200:
+            response = fetch(page_url)
+            if response.status_code != 200:
+                log(f"  ⚠️ Amazon discovery status {response.status_code}: {page_url}")
                 continue
-
-            # Extract ASINs from search results
-            asins = re.findall(r'data-asin="([A-Z0-9]{10})"', r.text)
-            for asin in set(asins):
-                if asin:
-                    url = f"https://www.amazon.ca/dp/{asin}"
-                    if url not in products:
-                        products.append(url)
+            soup = BeautifulSoup(response.text, "html.parser")
+            for item in soup.select("[data-asin]"):
+                asin = item.get("data-asin", "").strip()
+                if not re.fullmatch(r"[A-Z0-9]{10}", asin):
+                    continue
+                title_el = item.select_one("h2 span")
+                title = title_el.get_text(" ", strip=True) if title_el else f"Pokemon TCG {asin}"
+                candidates.append(build_candidate(f"https://www.amazon.ca/dp/{asin}", title, "amazon_search", 0.65))
         except Exception as e:
             log(f"  ⚠️ Amazon discovery error: {e}")
+        time.sleep(1)
+    return dedupe(candidates)
 
-    log(f"  Amazon: Found {len(products)} products")
-    return products
+
+def discover_pokemon_center():
+    urls = [
+        "https://www.pokemoncenter.com/en-ca/category/trading-card-game?category=tcg-cards",
+        "https://www.pokemoncenter.com/en-ca/search/pokemon%20tcg",
+    ]
+    candidates = []
+    for page_url in urls:
+        try:
+            response = fetch(page_url)
+            if response.status_code != 200:
+                log(f"  ⚠️ Pokemon Center discovery status {response.status_code}: {page_url}")
+                continue
+            for href, text in html_links(response.text, page_url, include_hosts=["pokemoncenter.com"]):
+                if "/en-ca/product/" in href:
+                    candidates.append(build_candidate(href, text, "pokemon_center_discovery_only", 0.7, reason="Manual review only"))
+        except Exception as e:
+            log(f"  ⚠️ Pokemon Center discovery error: {e}")
+        time.sleep(1)
+    return dedupe(candidates)
 
 
-def run_discovery():
-    """Main discovery loop."""
+DISCOVERERS = [
+    ("Walmart", discover_walmart),
+    ("Costco", discover_costco),
+    ("Best Buy", discover_bestbuy),
+    ("EB Games", discover_ebgames),
+    ("Amazon", discover_amazon),
+    ("Pokemon Center", discover_pokemon_center),
+]
+
+
+def existing_urls_from_config(config):
+    urls = {normalize_url(p["url"]) for p in config.get("products", []) if p.get("url")}
+    try:
+        urls.update(normalize_url(p["url"]) for p in get_approved_products())
+    except Exception:
+        pass
+    return urls
+
+
+def send_review_messages(bot_token, chat_id, candidates):
+    if not bot_token or not chat_id or not candidates:
+        return
+    batch = candidates[:10]
+    lines = ["🔍 <b>New Pokemon TCG products found</b>", ""]
+    for candidate in batch:
+        lines.extend([
+            f"<b>{candidate['id']}</b> | {retailer_display_name(candidate['retailer'])}",
+            escape_html(candidate["name"]),
+            f"{escape_html(candidate['priority'])} priority | confidence {candidate['confidence']:.2f}",
+            escape_html(candidate["url"]),
+            f"/approve {candidate['id']}  |  /ignore {candidate['id']}",
+            "",
+        ])
+    if len(candidates) > len(batch):
+        lines.append(f"...and {len(candidates) - len(batch)} more. Run /pending after reviewing these.")
+    send_telegram(bot_token, chat_id, "\n".join(lines).strip())
+
+
+def run_discovery(dry_run=False, send_review=True, print_limit=50):
     config = load_config()
-    bot_token = config.get('telegram_bot_token', '')
-    chat_id = config.get('telegram_chat_id', '')
+    if not dry_run:
+        init_db()
+        expire_old_candidates()
+    existing_urls = existing_urls_from_config(config)
 
-    # Get existing monitored URLs
-    existing_urls = set()
-    for p in config.get('products', []):
-        # Normalize URL — strip tracking params
-        url = p['url'].split('?')[0]
-        existing_urls.add(url)
+    all_candidates = []
+    for label, discoverer in DISCOVERERS:
+        log(f"Scanning {label}...")
+        candidates = discoverer()
+        log(f"  {label}: {len(candidates)} candidate products")
+        all_candidates.extend(candidates)
 
-    known = load_known()
-    known_urls = set(known.get('urls', []))
+    all_candidates = dedupe(all_candidates)
+    review_candidates = [c for c in all_candidates if normalize_url(c["url"]) not in existing_urls]
+    new_candidates = []
 
-    log("🔍 MasterBall Product Discovery Started")
-    log(f"  Existing monitored: {len(existing_urls)} products")
-    log(f"  Previously known: {len(known_urls)} URLs")
+    if dry_run:
+        shown = review_candidates[:print_limit]
+        log(f"Dry run found {len(review_candidates)} review candidates; showing {len(shown)}:")
+        for candidate in shown:
+            log(f"  {candidate['id']} | {candidate['name']} | {candidate['url']}")
+        if len(review_candidates) > len(shown):
+            log(f"  ...{len(review_candidates) - len(shown)} more hidden. Use --limit to show more.")
+        return review_candidates
 
-    # Discover from each retailer
-    all_discovered = []
+    for candidate in review_candidates:
+        stored, inserted = add_or_update_candidate(candidate)
+        if inserted and stored.get("status") == "pending":
+            new_candidates.append(stored)
 
-    log("Scanning Walmart.ca...")
-    all_discovered.extend([(u, "Walmart.ca") for u in discover_walmart()])
+    log("Discovery complete")
+    log(f"  Total candidates: {len(all_candidates)}")
+    log(f"  Not already monitored: {len(review_candidates)}")
+    log(f"  Newly queued: {len(new_candidates)}")
 
-    time.sleep(2)
+    if send_review and new_candidates:
+        send_review_messages(
+            config.get("telegram_bot_token", ""),
+            config.get("telegram_chat_id", ""),
+            new_candidates,
+        )
+        log("  Telegram review message sent")
 
-    log("Scanning Costco.ca...")
-    all_discovered.extend([(u, "Costco.ca") for u in discover_costco()])
+    return new_candidates
 
-    time.sleep(2)
 
-    log("Scanning Amazon.ca...")
-    all_discovered.extend([(u, "Amazon.ca") for u in discover_amazon()])
-
-    # Find truly new products
-    new_products = []
-    for url, retailer in all_discovered:
-        clean_url = url.split('?')[0]
-        if clean_url not in existing_urls and clean_url not in known_urls:
-            new_products.append((url, retailer))
-            known_urls.add(clean_url)
-
-    log(f"\n📊 Discovery Results:")
-    log(f"  Total found: {len(all_discovered)}")
-    log(f"  Already monitored: {len(all_discovered) - len(new_products)}")
-    log(f"  🆕 NEW products: {len(new_products)}")
-
-    # Alert on new products
-    if new_products and bot_token and chat_id:
-        msg = "🔍 <b>MasterBall — New Products Discovered!</b>\n\n"
-        for url, retailer in new_products[:10]:  # Max 10 per alert
-            msg += f"🆕 <b>{retailer}</b>\n{url}\n\n"
-        msg += f"Total: {len(new_products)} new products found.\n"
-        msg += "Reply to Peter on Discord to add them to monitoring!"
-        send_telegram(bot_token, chat_id, msg)
-        log("📱 Telegram alert sent!")
-
-    # Save known URLs
-    known['urls'] = list(known_urls)
-    known['last_scan'] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    save_known(known)
-
-    log("✅ Discovery complete!")
-    return new_products
+def main():
+    parser = argparse.ArgumentParser(description="Discover new Pokemon TCG products for review.")
+    parser.add_argument("--dry-run", action="store_true", help="Print candidates without writing the queue or sending Telegram.")
+    parser.add_argument("--no-telegram", action="store_true", help="Do not send Telegram review messages.")
+    parser.add_argument("--limit", type=int, default=50, help="Dry-run candidate print limit.")
+    args = parser.parse_args()
+    run_discovery(dry_run=args.dry_run, send_review=not args.no_telegram, print_limit=args.limit)
 
 
 if __name__ == "__main__":
-    run_discovery()
+    main()

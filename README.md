@@ -13,7 +13,15 @@ Automated monitor that sends Telegram alerts when Pokemon products come back in 
 
 ## 🚀 Quick Start
 
-### 1. Fill In Local Secrets
+### 1. Bootstrap Local Setup
+
+```bash
+./control.sh bootstrap
+```
+
+This creates/updates the local virtual environment, installs Python dependencies, installs Playwright Chromium for selective browser checks, initializes SQLite, and runs `doctor`.
+
+### 2. Fill In Local Secrets
 
 Keep `config.json` checked in with blank secrets, then create `config.local.json` for anything private:
 
@@ -28,7 +36,9 @@ Keep `config.json` checked in with blank secrets, then create `config.local.json
 
 Optional Walmart proxy credentials live in `walmart_proxy.local.json`.
 
-### 2. Run the Monitor
+You can copy the shape from `config.local.example.json` and `walmart_proxy.local.example.json`.
+
+### 3. Run the Monitor
 
 ```bash
 # Start in background
@@ -47,16 +57,39 @@ Optional Walmart proxy credentials live in `walmart_proxy.local.json`.
 ./control.sh test
 ```
 
+## 🔍 New Product Discovery
+
+Run discovery any time:
+
+```bash
+./control.sh discover-now
+```
+
+The scanner looks for Canada-first sealed Pokemon TCG products across Walmart.ca, Costco.ca, Best Buy Canada, EB Games/GameStop Canada, Amazon.ca, and Pokemon Center Canada. New products are stored in SQLite as a review queue and sent to your owner Telegram chat.
+
+Approve or ignore from Telegram:
+
+```text
+/approve abc123
+/ignore abc123
+/pending
+```
+
+Approved products are loaded by the monitor without editing `config.json`.
+
 ## 📱 How It Works
 
 1. Script checks product URLs every 30 seconds (configurable)
-2. Detects when "Add to Cart" or similar text appears
+2. Distinguishes `in_stock`, `out_of_stock`, `unknown`, `blocked`, `preorder`, and `marketplace`
 3. Sends Telegram alerts when stock comes back
-4. Also sends macOS notification
+4. Preserves previous state when a site blocks or returns an unclear page
+5. Uses selective browser checks for high-priority protected products
 
 ## ✏️ Adding Products
 
-Edit `config.json`:
+Preferred: run discovery and approve candidates from Telegram.
+
+Manual seed products still live in `config.json`:
 
 ```json
 {
@@ -64,6 +97,15 @@ Edit `config.json`:
   "url": "https://www.costco.ca/product-link",
   "enabled": true
 }
+```
+
+## 🧪 Health Checks
+
+```bash
+./control.sh doctor
+./control.sh doctor-retailers
+./control.sh test-product "https://www.bestbuy.ca/en-ca/product/example/12345678"
+./control.sh discover-dry-run
 ```
 
 ## 🔧 Troubleshooting

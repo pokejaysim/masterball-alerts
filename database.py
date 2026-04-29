@@ -11,7 +11,12 @@ import time
 import threading
 from datetime import datetime
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "masterball.db")
+from product_utils import candidate_id as make_candidate_id, normalize_url
+
+DB_PATH = os.environ.get(
+    "MASTERBALL_DB_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "masterball.db"),
+)
 
 # Thread-local storage for connections
 _local = threading.local()
@@ -25,6 +30,13 @@ def get_conn():
         _local.conn.execute("PRAGMA journal_mode=WAL")  # Better concurrent access
         _local.conn.execute("PRAGMA busy_timeout=5000")
     return _local.conn
+
+
+def close_conn():
+    """Close the thread-local database connection, mainly for tests."""
+    if hasattr(_local, 'conn') and _local.conn is not None:
+        _local.conn.close()
+        _local.conn = None
 
 
 def init_db():
@@ -85,6 +97,31 @@ def init_db():
             checks_total INTEGER DEFAULT 0,
             checks_failed INTEGER DEFAULT 0,
             captchas_hit INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS discovery_candidates (
+            id TEXT PRIMARY KEY,
+            retailer TEXT NOT NULL,
+            name TEXT NOT NULL,
+            url TEXT NOT NULL,
+            normalized_url TEXT NOT NULL UNIQUE,
+            product_id TEXT,
+            source TEXT,
+            confidence REAL DEFAULT 0,
+            first_seen TEXT NOT NULL,
+            last_seen TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            priority TEXT NOT NULL DEFAULT 'normal',
+            reason TEXT,
+            raw_json TEXT
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_discovery_status
+            ON discovery_candidates(status);
+
+        CREATE TABLE IF NOT EXISTS bot_state (
+            key TEXT PRIMARY KEY,
+            value TEXT
         );
     """)
     conn.commit()
@@ -227,6 +264,182 @@ def add_request(url):
     conn.execute("""
         INSERT INTO product_requests (url, submitted_at) VALUES (?, ?)
     """, (url, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+
+
+# --- Discovery Review Queue ---
+
+def add_or_update_candidate(candidate):
+    """Insert a discovery candidate or refresh its metadata.
+
+    Returns (candidate_dict, inserted_bool). Existing approved/ignored choices are
+    preserved, while the latest name/source/confidence are kept fresh.
+    """
+    conn = get_conn()
+    url = candidate["url"]
+    normalized = normalize_url(url)
+    cid = candidate.get("id") or make_candidate_id(url)
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    raw_json = candidate.get("raw_json")
+    if raw_json is not None and not isinstance(raw_json, str):
+        raw_json = json.dumps(raw_json, sort_keys=True)
+
+    existing = conn.execute(
+        "SELECT * FROM discovery_candidates WHERE normalized_url = ? OR id = ?",
+        (normalized, cid),
+    ).fetchone()
+
+    if existing:
+        conn.execute("""
+            UPDATE discovery_candidates
+            SET retailer = ?, name = ?, url = ?, normalized_url = ?, product_id = ?,
+                source = ?, confidence = ?, last_seen = ?, priority = ?,
+                reason = COALESCE(?, reason), raw_json = COALESCE(?, raw_json)
+            WHERE id = ?
+        """, (
+            candidate["retailer"],
+            candidate["name"],
+            url,
+            normalized,
+            candidate.get("product_id"),
+            candidate.get("source"),
+            float(candidate.get("confidence", 0)),
+            now,
+            candidate.get("priority", "normal"),
+            candidate.get("reason"),
+            raw_json,
+            existing["id"],
+        ))
+        conn.commit()
+        return get_candidate(existing["id"]), False
+
+    conn.execute("""
+        INSERT INTO discovery_candidates
+        (id, retailer, name, url, normalized_url, product_id, source, confidence,
+         first_seen, last_seen, status, priority, reason, raw_json)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        cid,
+        candidate["retailer"],
+        candidate["name"],
+        url,
+        normalized,
+        candidate.get("product_id"),
+        candidate.get("source"),
+        float(candidate.get("confidence", 0)),
+        now,
+        now,
+        candidate.get("status", "pending"),
+        candidate.get("priority", "normal"),
+        candidate.get("reason"),
+        raw_json,
+    ))
+    conn.commit()
+    return get_candidate(cid), True
+
+
+def get_candidate(candidate_id):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM discovery_candidates WHERE id = ?",
+        (candidate_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def get_candidate_by_url(url):
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM discovery_candidates WHERE normalized_url = ?",
+        (normalize_url(url),),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_candidates(status=None, limit=25):
+    conn = get_conn()
+    if status:
+        rows = conn.execute("""
+            SELECT * FROM discovery_candidates
+            WHERE status = ?
+            ORDER BY first_seen DESC
+            LIMIT ?
+        """, (status, limit)).fetchall()
+    else:
+        rows = conn.execute("""
+            SELECT * FROM discovery_candidates
+            ORDER BY first_seen DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_candidate_status(candidate_id, status, reason=None):
+    allowed = {"pending", "approved", "ignored", "expired"}
+    if status not in allowed:
+        raise ValueError(f"Unsupported candidate status: {status}")
+    conn = get_conn()
+    row = conn.execute(
+        "SELECT * FROM discovery_candidates WHERE id = ?",
+        (candidate_id,),
+    ).fetchone()
+    if not row:
+        return None
+    conn.execute("""
+        UPDATE discovery_candidates
+        SET status = ?, reason = COALESCE(?, reason), last_seen = ?
+        WHERE id = ?
+    """, (status, reason, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), candidate_id))
+    conn.commit()
+    return get_candidate(candidate_id)
+
+
+def expire_old_candidates(days=45):
+    conn = get_conn()
+    conn.execute("""
+        UPDATE discovery_candidates
+        SET status = 'expired', reason = COALESCE(reason, 'Expired pending review')
+        WHERE status = 'pending'
+          AND datetime(first_seen) < datetime('now', '-' || ? || ' days')
+    """, (int(days),))
+    conn.commit()
+
+
+def get_approved_products():
+    conn = get_conn()
+    rows = conn.execute("""
+        SELECT id, retailer, name, url, priority
+        FROM discovery_candidates
+        WHERE status = 'approved'
+        ORDER BY first_seen ASC
+    """).fetchall()
+    products = []
+    for row in rows:
+        data = dict(row)
+        products.append({
+            "name": data["name"],
+            "url": data["url"],
+            "enabled": True,
+            "priority": data.get("priority") or "normal",
+            "source": "discovery",
+            "candidate_id": data["id"],
+            "retailer": data["retailer"],
+        })
+    return products
+
+
+def get_bot_state(key, default=None):
+    conn = get_conn()
+    row = conn.execute("SELECT value FROM bot_state WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_bot_state(key, value):
+    conn = get_conn()
+    conn.execute("""
+        INSERT INTO bot_state (key, value) VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = ?
+    """, (key, str(value), str(value)))
     conn.commit()
 
 

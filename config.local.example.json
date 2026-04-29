@@ -1,0 +1,6 @@
+{
+  "telegram_bot_token": "123456:your-bot-token",
+  "telegram_chat_id": "your-owner-chat-id",
+  "telegram_channel_id": "optional-channel-id",
+  "pricecharting_token": "optional-pricecharting-token"
+}
