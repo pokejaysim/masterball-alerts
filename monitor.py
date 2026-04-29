@@ -639,6 +639,8 @@ def cffi_get_with_fallback(url, timeout=15):
 _browser_lane_lock = threading.Lock()
 _browser_backoff = {}  # normalized_url -> {"next_allowed": float, "failures": int}
 _degraded_notices = {}  # retailer -> last_notice_time
+_discovery_lock = threading.Lock()
+_discovery_reload_requested = threading.Event()
 BROWSER_MIN_INTERVAL_SECONDS = 180
 BROWSER_MAX_BACKOFF_SECONDS = 3600
 
@@ -1093,6 +1095,53 @@ def notify_degraded(retailer, reason, bot_token, chat_id):
     )
 
 
+def discovery_settings_from_config(config):
+    discovery = config.get("discovery", {})
+    return {
+        "auto_run": bool(discovery.get("auto_run", False)),
+        "interval_seconds": max(3600, int(discovery.get("auto_run_interval_minutes", 180)) * 60),
+        "startup_delay_seconds": max(0, int(discovery.get("auto_run_startup_delay_seconds", 120))),
+        "auto_approve": bool(discovery.get("auto_approve", False)),
+        "auto_min_confidence": float(discovery.get("auto_approve_min_confidence", 0.82)),
+        "auto_retailers": discovery.get("auto_approve_retailers", ["walmart", "costco", "bestbuy", "ebgames"]),
+    }
+
+
+def maybe_start_auto_discovery(settings, last_started_at, monitor_started_at, log_func=log):
+    if not settings.get("auto_run"):
+        return last_started_at
+
+    now = time.time()
+    if now - monitor_started_at < settings["startup_delay_seconds"]:
+        return last_started_at
+    if last_started_at and now - last_started_at < settings["interval_seconds"]:
+        return last_started_at
+    if not _discovery_lock.acquire(blocking=False):
+        return last_started_at
+
+    def _run():
+        try:
+            from discover import run_discovery
+
+            log_func("🔍 Auto-discovery started")
+            changed = run_discovery(
+                dry_run=False,
+                send_review=True,
+                auto_approve=settings["auto_approve"],
+                auto_min_confidence=settings["auto_min_confidence"],
+                auto_retailers=settings["auto_retailers"],
+            )
+            log_func(f"🔍 Auto-discovery finished: {len(changed)} new/updated candidates")
+            _discovery_reload_requested.set()
+        except Exception as e:
+            log_func(f"⚠️  Auto-discovery failed: {e}")
+        finally:
+            _discovery_lock.release()
+
+    threading.Thread(target=_run, daemon=True).start()
+    return now
+
+
 # ---------------------------------------------------------------------------
 # Main loop
 # ---------------------------------------------------------------------------
@@ -1115,6 +1164,7 @@ def monitor_loop():
     stock_alert_chat_id = channel_id or chat_id
     use_telegram = bool(bot_token and chat_id)
     check_interval = config.get('check_interval', 30)
+    discovery_settings = discovery_settings_from_config(config)
 
     enabled_products = load_enabled_products(config)
     
@@ -1154,6 +1204,8 @@ def monitor_loop():
     last_health_ping = time.time()
     last_config_check = time.time()
     last_review_poll = 0
+    monitor_started_at = time.time()
+    last_auto_discovery_started = 0
     error_counts = {}  # Track errors per retailer per cycle
 
     while True:
@@ -1230,6 +1282,17 @@ def monitor_loop():
                     log(f"⚠️  Review command polling failed: {e}")
                 last_review_poll = time.time()
 
+            if _discovery_reload_requested.is_set():
+                _discovery_reload_requested.clear()
+                enabled_products = load_enabled_products()
+                log(f"🔄 Auto-discovery products reloaded: {len(enabled_products)} active products")
+
+            last_auto_discovery_started = maybe_start_auto_discovery(
+                discovery_settings,
+                last_auto_discovery_started,
+                monitor_started_at,
+            )
+
             # Save JSON as backup (dashboard still reads from it)
             save_json(STOCK_STATUS_FILE, stock_status)
 
@@ -1247,6 +1310,7 @@ def monitor_loop():
                     stock_alert_chat_id = channel_id or chat_id
                     use_telegram = bool(bot_token and chat_id)
                     check_interval = new_config.get('check_interval', 30)
+                    discovery_settings = discovery_settings_from_config(new_config)
                 except:
                     pass
                 last_config_check = time.time()

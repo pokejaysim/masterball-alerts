@@ -59,7 +59,16 @@ You can copy the shape from `config.local.example.json` and `walmart_proxy.local
 
 ## 🔍 New Product Discovery
 
-Run discovery any time:
+Discovery now runs automatically from the monitor. Defaults in `config.json`:
+
+- `auto_run`: enabled
+- `auto_run_interval_minutes`: every 3 hours
+- `auto_approve`: enabled for high-confidence matches
+- `auto_approve_retailers`: Walmart, Costco, Best Buy, EB Games
+
+Amazon and Pokemon Center still stay review-first by default because they are noisier/protected.
+
+Run discovery manually any time:
 
 ```bash
 ./control.sh discover-now

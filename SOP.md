@@ -243,7 +243,7 @@ Approved products are stored in SQLite and loaded by the monitor without editing
 ./control.sh discover-auto-add
 ```
 
-Auto-add approves high-confidence candidates from the configured retailers. Defaults live in `config.json` under `discovery`: minimum confidence `0.82`, retailers Walmart, Costco, Best Buy, and EB Games. Amazon and Pokemon Center remain review-first by default because they are noisier or heavily protected.
+Auto-add also runs automatically from the monitor. Defaults live in `config.json` under `discovery`: run every 3 hours, minimum confidence `0.82`, retailers Walmart, Costco, Best Buy, and EB Games. Amazon and Pokemon Center remain review-first by default because they are noisier or heavily protected.
 
 ### Option 3: Edit config.json manually
 ```bash

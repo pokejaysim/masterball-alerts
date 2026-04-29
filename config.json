@@ -4,7 +4,10 @@
   "pricecharting_token": "",
   "check_interval": 30,
   "discovery": {
-    "auto_approve": false,
+    "auto_run": true,
+    "auto_run_interval_minutes": 180,
+    "auto_run_startup_delay_seconds": 120,
+    "auto_approve": true,
     "auto_approve_min_confidence": 0.82,
     "auto_approve_retailers": [
       "walmart",
