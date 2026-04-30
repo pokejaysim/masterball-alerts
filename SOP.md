@@ -90,13 +90,13 @@ RestockBall is an automated Pokemon TCG restock monitoring system that tracks 45
 - **Note:** Website (HTML) blocks bots, but API is open
 
 ### Walmart.ca
-- **Method:** curl_cffi (chrome131 TLS fingerprint) + __NEXT_DATA__ JSON parsing first, then selective Playwright browser checks for high-priority approved products
+- **Method:** Protected Walmart lane: residential proxy + curl_cffi first, then single-page Playwright confirmation
 - **CAPTCHA Handling:** Preserve previous stock state, log degraded health, and back off browser checks instead of marking products sold out
 - **Stock Detection:**
   - `"availabilityStatus": "IN_STOCK"` = Available
   - `"sellerName"` checked against trusted list
 - **Trusted Sellers:** Walmart, Walmart Canada, Walmart.ca
-- **Note:** PerimeterX bot protection — only works with curl_cffi
+- **Note:** Proxy credentials live in `walmart_proxy.local.json`; no checkout or CAPTCHA solving is automated
 
 ### Costco.ca
 - **Method:** curl_cffi (chrome131) + JSON-LD structured data
@@ -249,7 +249,16 @@ Approved products are stored in SQLite and loaded by the monitor without editing
 ./control.sh discover-auto-add
 ```
 
-Auto-add also runs automatically from the monitor. Defaults live in `config.json` under `discovery`: run every 3 hours, minimum confidence `0.82`, retailers Costco, Best Buy, and EB Games. Walmart, Amazon, and Pokemon Center remain review-first by default because they are noisier or heavily protected.
+Auto-add also runs automatically from the monitor. Defaults live in `config.json` under `discovery`: run every 3 hours, minimum confidence `0.82`, retailers Costco, Best Buy, EB Games, and Walmart. Walmart only auto-adds after protected validation confirms the product page is real and not marketplace/noisy.
+
+### Walmart Dry Runs
+```bash
+./control.sh doctor-walmart
+./control.sh discover-walmart-dry-run
+./control.sh test-product "https://www.walmart.ca/en/ip/example/12345678"
+```
+
+If the Walmart proxy is missing or blocked, candidates stay pending with a validation reason.
 
 ### Option 3: Edit config.json manually
 ```bash

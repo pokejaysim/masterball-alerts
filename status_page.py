@@ -312,6 +312,16 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
             <span id="pending" class="value">--</span>
             <span class="hint">Waiting for review</span>
           </div>
+          <div class="metric">
+            <span class="label">Walmart Lane</span>
+            <span id="walmart-lane" class="value">--</span>
+            <span id="walmart-lane-hint" class="hint">Protected checker</span>
+          </div>
+          <div class="metric">
+            <span class="label">Walmart Queue</span>
+            <span id="walmart-queue" class="value">--</span>
+            <span id="walmart-queue-hint" class="hint">Pending validation</span>
+          </div>
         </div>
         <div class="commands" id="actions"></div>
       </section>
@@ -371,6 +381,11 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
       const discovery = snapshot.database && snapshot.database.discovery ? snapshot.database.discovery : {{}};
       text("approved", discovery.approved);
       text("pending", discovery.pending);
+      const walmart = snapshot.walmart || {{}};
+      text("walmart-lane", walmart.lane_state ? walmart.lane_state.toUpperCase() : "--");
+      text("walmart-lane-hint", walmart.proxy_configured ? "Proxy configured | " + (walmart.active_product_count || 0) + " active" : "Proxy missing | " + (walmart.active_product_count || 0) + " active");
+      text("walmart-queue", walmart.pending_validation_count ?? walmart.pending_count ?? "--");
+      text("walmart-queue-hint", (walmart.pending_count || 0) + " total pending Walmart");
 
       const retailers = document.getElementById("retailers");
       retailers.innerHTML = "";
@@ -486,4 +501,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

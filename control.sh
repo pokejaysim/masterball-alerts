@@ -207,6 +207,12 @@ case "$1" in
         "$PYTHON" "$SCRIPT_DIR/discover.py" --dry-run "$@"
         ;;
 
+    discover-walmart-dry-run)
+        echo "🔍 Dry-run Walmart discovery and validation preview..."
+        shift
+        "$PYTHON" "$SCRIPT_DIR/discover.py" --dry-run --retailers walmart --auto-approve --auto-retailers walmart "$@"
+        ;;
+
     discover-auto-add)
         echo "🔍 Discovering and auto-adding high-confidence Pokemon TCG products..."
         shift
@@ -219,6 +225,11 @@ case "$1" in
 
     doctor-retailers)
         "$PYTHON" "$SCRIPT_DIR/doctor.py" --retailers
+        ;;
+
+    doctor-walmart)
+        shift
+        "$PYTHON" "$SCRIPT_DIR/doctor.py" --walmart "$@"
         ;;
 
     test-product)
@@ -235,7 +246,7 @@ case "$1" in
         ;;
         
     *)
-        echo "Usage: $0 {bootstrap|start|stop|restart|status|logs|dashboard-start|dashboard-stop|dashboard-status|dashboard-open|dashboard-logs|status-json|discover-now|discover-dry-run|discover-auto-add|doctor|doctor-retailers|test-product|test}"
+        echo "Usage: $0 {bootstrap|start|stop|restart|status|logs|dashboard-start|dashboard-stop|dashboard-status|dashboard-open|dashboard-logs|status-json|discover-now|discover-dry-run|discover-walmart-dry-run|discover-auto-add|doctor|doctor-retailers|doctor-walmart|test-product|test}"
         echo ""
         echo "Commands:"
         echo "  bootstrap        - Create/update venv, install dependencies, initialize DB"
@@ -252,9 +263,11 @@ case "$1" in
         echo "  status-json      - Print one machine-readable health snapshot"
         echo "  discover-now     - Scan retailers and send Telegram review queue"
         echo "  discover-dry-run - Scan retailers without saving or sending Telegram"
+        echo "  discover-walmart-dry-run - Preview Walmart discovery and validation"
         echo "  discover-auto-add - Auto-approve high-confidence discovered products"
         echo "  doctor           - Check setup and local dependencies"
         echo "  doctor-retailers - Check setup plus one live check per retailer"
+        echo "  doctor-walmart   - Check Walmart proxy/protected lane"
         echo "  test-product     - Check one product URL and print parsed result"
         echo "  test             - Alias for doctor"
         exit 1

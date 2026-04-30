@@ -3,7 +3,8 @@ import unittest
 from unittest.mock import Mock, patch
 
 import monitor
-from product_utils import STOCK_IN, STOCK_MARKETPLACE, STOCK_OUT
+from product_utils import STOCK_BLOCKED, STOCK_IN, STOCK_MARKETPLACE, STOCK_OUT, STOCK_UNKNOWN, StockResult
+from walmart_protected import parse_walmart_stock_html
 
 
 class FakeResponse:
@@ -48,9 +49,60 @@ class CheckerFixtureTests(unittest.TestCase):
             }
         }
         html = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script>'
-        with patch("monitor.cffi_get_with_fallback", return_value=FakeResponse(html)):
-            result = monitor.check_walmart("https://www.walmart.ca/en/ip/example/12345678", {"name": "Example - Walmart.ca", "url": "https://www.walmart.ca/en/ip/example/12345678", "priority": "high"})
+        result = parse_walmart_stock_html(html)
         self.assertEqual(result.status, STOCK_MARKETPLACE)
+
+    def test_walmart_fixture_detects_trusted_in_stock_metadata(self):
+        next_data = {
+            "props": {
+                "pageProps": {
+                    "initialData": {
+                        "data": {
+                            "product": {
+                                "sellerName": "Walmart.ca",
+                                "availabilityStatus": "IN_STOCK",
+                                "priceInfo": {"currentPrice": {"price": 59.99}},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        html = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script>'
+        result = parse_walmart_stock_html(html)
+        self.assertEqual(result.status, STOCK_IN)
+        self.assertEqual(result.seller, "Walmart.ca")
+
+    def test_walmart_fixture_detects_out_of_stock(self):
+        next_data = {
+            "props": {
+                "pageProps": {
+                    "initialData": {
+                        "data": {
+                            "product": {
+                                "sellerName": "Walmart.ca",
+                                "availabilityStatus": "OUT_OF_STOCK",
+                                "priceInfo": {"currentPrice": {"price": 59.99}},
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        html = f'<script id="__NEXT_DATA__" type="application/json">{json.dumps(next_data)}</script>'
+        result = parse_walmart_stock_html(html)
+        self.assertEqual(result.status, STOCK_OUT)
+
+    def test_walmart_fixture_detects_captcha(self):
+        result = parse_walmart_stock_html("<html>captcha</html>")
+        self.assertEqual(result.status, STOCK_BLOCKED)
+
+    def test_walmart_alert_requires_browser_confirmation(self):
+        product = {"name": "Example - Walmart.ca", "url": "https://www.walmart.ca/en/ip/example/12345678", "priority": "normal"}
+        with patch("monitor.check_walmart_lightweight", return_value=StockResult.in_stock(price="59.99", seller="Walmart.ca")), \
+             patch("monitor.check_walmart_browser_lane", return_value=StockResult.unknown(reason="browser lane busy")):
+            result = monitor.check_walmart(product["url"], product)
+        self.assertEqual(result.status, STOCK_UNKNOWN)
 
     def test_bestbuy_fixture_detects_in_stock(self):
         session = Mock()

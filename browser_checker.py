@@ -11,6 +11,8 @@ import re
 import time
 from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
+from walmart_protected import walmart_playwright_proxy_config
+
 MONITOR_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Reuse browser across checks to avoid startup overhead
@@ -27,15 +29,19 @@ def get_browser(headless=True):
     
     _playwright = sync_playwright().start()
     
-    _browser = _playwright.chromium.launch(
-        headless=headless,
-        args=[
+    launch_options = {
+        "headless": headless,
+        "args": [
             '--disable-blink-features=AutomationControlled',
             '--disable-dev-shm-usage',
             '--no-sandbox',
             '--disable-gpu',
-        ]
-    )
+        ],
+    }
+    proxy_config = walmart_playwright_proxy_config()
+    if proxy_config:
+        launch_options["proxy"] = proxy_config
+    _browser = _playwright.chromium.launch(**launch_options)
     
     _context = _browser.new_context(
         viewport={'width': 1920, 'height': 1080},

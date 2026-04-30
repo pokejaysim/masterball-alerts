@@ -30,6 +30,11 @@ from product_utils import (
     retailer_from_url,
 )
 from settings import load_config
+from walmart_protected import (
+    fetch_walmart_html,
+    validate_walmart_candidate,
+    walmart_settings_from_config,
+)
 
 
 USER_AGENT = (
@@ -99,6 +104,8 @@ def build_candidate(url, raw_name="", source="", confidence=0.7, reason=None):
         return None
 
     normalized = normalize_url(url)
+    if retailer == "walmart" and not product_identifier(normalized):
+        return None
     return {
         "id": candidate_id(normalized),
         "retailer": retailer,
@@ -137,7 +144,10 @@ def discover_walmart():
     candidates = []
     for page_url in urls:
         try:
-            response = fetch(page_url, prefer_cffi=True)
+            response, error = fetch_walmart_html(page_url, timeout=20)
+            if error:
+                log(f"  ⚠️ Walmart discovery blocked: {error}")
+                continue
             if response.status_code != 200:
                 log(f"  ⚠️ Walmart discovery status {response.status_code}: {page_url}")
                 continue
@@ -346,6 +356,20 @@ def should_auto_approve(candidate, min_confidence, retailers):
     return True
 
 
+def maybe_auto_approve_candidate(candidate, config, min_confidence, retailers):
+    if not should_auto_approve(candidate, min_confidence, retailers):
+        return None, None
+    if candidate["retailer"] == "walmart":
+        walmart_settings = walmart_settings_from_config(config)
+        if not walmart_settings.get("auto_add_after_validation", True):
+            return None, "walmart validation required before auto-add"
+        valid, reason, _result = validate_walmart_candidate(candidate, config=config)
+        if not valid:
+            return None, reason
+        return "approved", "Auto-approved by Walmart validation"
+    return "approved", "Auto-approved by discovery"
+
+
 def run_discovery(
     dry_run=False,
     send_review=True,
@@ -353,6 +377,7 @@ def run_discovery(
     auto_approve=None,
     auto_min_confidence=None,
     auto_retailers=None,
+    retailers_filter=None,
 ):
     config = load_config()
     discovery_config = config.get("discovery", {})
@@ -366,6 +391,7 @@ def run_discovery(
     if auto_retailers is None:
         auto_retailers = discovery_config.get("auto_approve_retailers")
     auto_retailers = _parse_retailers(auto_retailers)
+    retailers_filter = _parse_retailers(retailers_filter) if retailers_filter else None
 
     if not dry_run:
         init_db()
@@ -374,6 +400,15 @@ def run_discovery(
 
     all_candidates = []
     for label, discoverer in DISCOVERERS:
+        retailer_key = label.lower().replace(" ", "").replace("/", "")
+        aliases = {
+            "bestbuy": "bestbuy",
+            "ebgames": "ebgames",
+            "pokemoncenter": "pokemoncenter",
+        }
+        retailer_key = aliases.get(retailer_key, retailer_key)
+        if retailers_filter and retailer_key not in retailers_filter:
+            continue
         log(f"Scanning {label}...")
         candidates = discoverer()
         log(f"  {label}: {len(candidates)} candidate products")
@@ -400,15 +435,26 @@ def run_discovery(
                 f"  Auto-add mode would approve {len(would_auto)} candidates "
                 f"(min confidence {float(auto_min_confidence):.2f}; retailers {', '.join(sorted(auto_retailers))})."
             )
+            walmart_validation = [
+                c for c in would_auto
+                if c.get("retailer") == "walmart"
+            ]
+            if walmart_validation:
+                log(f"  Walmart auto-add requires live validation for {len(walmart_validation)} candidates.")
         return review_candidates
 
     for candidate in review_candidates:
         stored, inserted = add_or_update_candidate(candidate)
-        if stored.get("status") == "pending" and auto_approve and should_auto_approve(stored, auto_min_confidence, auto_retailers):
-            approved = set_candidate_status(stored["id"], "approved", reason="Auto-approved by discovery")
-            if approved:
-                auto_approved.append(approved)
-            continue
+        if stored.get("status") == "pending" and auto_approve:
+            status, reason = maybe_auto_approve_candidate(stored, config, auto_min_confidence, auto_retailers)
+            if status == "approved":
+                approved = set_candidate_status(stored["id"], "approved", reason=reason)
+                if approved:
+                    auto_approved.append(approved)
+                continue
+            if reason:
+                set_candidate_status(stored["id"], "pending", reason=reason)
+                continue
         if inserted and stored.get("status") == "pending":
             new_candidates.append(stored)
 
@@ -445,6 +491,7 @@ def main():
     parser.add_argument("--auto-approve", action="store_true", help="Automatically approve high-confidence candidates.")
     parser.add_argument("--auto-min-confidence", type=float, default=None, help="Minimum confidence for auto-approval.")
     parser.add_argument("--auto-retailers", default=None, help="Comma-separated retailers allowed for auto-approval.")
+    parser.add_argument("--retailers", default=None, help="Comma-separated retailers to scan, such as walmart or costco.")
     args = parser.parse_args()
     run_discovery(
         dry_run=args.dry_run,
@@ -453,6 +500,7 @@ def main():
         auto_approve=args.auto_approve or None,
         auto_min_confidence=args.auto_min_confidence,
         auto_retailers=args.auto_retailers,
+        retailers_filter=args.retailers,
     )
 
 

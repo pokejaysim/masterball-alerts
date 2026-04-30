@@ -11,6 +11,12 @@ from database import DB_PATH, init_db
 from monitor import check_product
 from product_utils import StockResult, normalize_url, retailer_from_url
 from settings import load_config
+from walmart_protected import (
+    check_walmart_lightweight,
+    validate_walmart_candidate,
+    walmart_proxy_ready,
+    walmart_settings_from_config,
+)
 
 
 REQUIRED_IMPORTS = [
@@ -98,6 +104,48 @@ def check_playwright_browser():
         print("   Try: python -m playwright install chromium")
 
 
+def check_walmart_setup(config, url=None):
+    settings = walmart_settings_from_config(config)
+    if settings.get("enabled", True):
+        ok("Walmart protected lane enabled")
+    else:
+        warn("Walmart protected lane disabled")
+
+    if walmart_proxy_ready():
+        ok("Walmart proxy configured")
+    else:
+        warn("Walmart proxy missing; Walmart checks will stay blocked/idle until walmart_proxy.local.json is configured")
+        return
+
+    product_url = url
+    if not product_url:
+        for product in config.get("products", []):
+            if "walmart.ca" in product.get("url", "").lower() and product.get("enabled", True):
+                product_url = product["url"]
+                break
+    if not product_url:
+        warn("No enabled Walmart product URL available for live check")
+        return
+
+    result = check_walmart_lightweight(product_url)
+    print(json.dumps({
+        "retailer": "walmart",
+        "url": normalize_url(product_url),
+        "lightweight_result": result.as_dict(),
+    }, indent=2))
+    candidate = {
+        "retailer": "walmart",
+        "name": "Pokemon TCG Walmart doctor product",
+        "url": product_url,
+    }
+    valid, reason, validation_result = validate_walmart_candidate(candidate, config=config)
+    print(json.dumps({
+        "validation_passed": valid,
+        "reason": reason,
+        "validation_result": validation_result.as_dict() if validation_result else None,
+    }, indent=2))
+
+
 def check_retailer_smoke(config):
     seen = set()
     for product in config.get("products", []):
@@ -124,6 +172,8 @@ def check_retailer_smoke(config):
 def main():
     parser = argparse.ArgumentParser(description="Check local MasterBall Alerts setup.")
     parser.add_argument("--retailers", action="store_true", help="Run one live stock check per enabled retailer.")
+    parser.add_argument("--walmart", action="store_true", help="Run Walmart proxy/protected-lane checks.")
+    parser.add_argument("--walmart-url", default=None, help="Optional Walmart product URL for --walmart.")
     args = parser.parse_args()
 
     print("MasterBall Alerts Doctor")
@@ -132,6 +182,8 @@ def main():
     config = check_config()
     check_database()
     check_playwright_browser()
+    if args.walmart:
+        check_walmart_setup(config, args.walmart_url)
     if args.retailers:
         check_retailer_smoke(config)
     else:

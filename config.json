@@ -12,8 +12,22 @@
     "auto_approve_retailers": [
       "costco",
       "bestbuy",
-      "ebgames"
+      "ebgames",
+      "walmart"
     ]
+  },
+  "walmart": {
+    "enabled": true,
+    "auto_add_after_validation": true,
+    "coverage": "all_tcg",
+    "require_trusted_seller": true,
+    "require_proxy": true,
+    "lightweight_interval_minutes": 10,
+    "browser_confirm_interval_minutes": 30,
+    "max_browser_pages": 1,
+    "max_products_per_cycle": 3,
+    "block_backoff_minutes": 30,
+    "owner_degraded_alerts": true
   },
   "products": [
     {
@@ -159,43 +173,43 @@
     {
       "name": "PE ETB - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Scarlet-Violet-Prismatic-Evolutions-Elite-Trainer-Box/6000208831664",
-      "enabled": false,
+      "enabled": true,
       "priority": "high"
     },
     {
       "name": "PE Booster Bundle - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Scarlet-Violet-Prismatic-Evolutions-Booster-Bundle/6000208884941",
-      "enabled": false,
+      "enabled": true,
       "priority": "high"
     },
     {
       "name": "PE Surprise Box - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Scarlet-Violet-Prismatic-Evolutions-Surprise-Box/6000208885051",
-      "enabled": false,
+      "enabled": true,
       "priority": "high"
     },
     {
       "name": "PE Poster Collection - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Scarlet-Violet-Prismatic-Evolutions-Poster-Collection/6000208831614",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
       "name": "PE Accessory Pouch - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pokemon-TCG-Prismatic-Evolutions-Accessory-Pouch-Special-Collection/48JZ1CGO8LC0",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
       "name": "PE Premium Figure Collection - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pokemon-TCG-Scarlet-Violet-Prismatic-Evolutions-Premium-Figure-Collection/3RGTNJDMP1NA",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
       "name": "First Partner Illustration Series 1 - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pokemon-TCG-First-Partner-Illustration-Collection-Series-1/3VOW28YCVGNC",
-      "enabled": false,
+      "enabled": true,
       "priority": "high"
     },
     {
@@ -207,31 +221,31 @@
     {
       "name": "AH ETB - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-Elite-Trainer-Box/4BBHBZPCR45Z",
-      "enabled": false,
+      "enabled": true,
       "priority": "high"
     },
     {
       "name": "AH Tech Sticker Collection - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-Tech-Sticker-Collection/36DI3PR8V7X2",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
       "name": "AH Premium Poster Collection - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-Premium-Poster-Collection-Receive-1-at-Random/44V1HEXYK000",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
       "name": "AH 2-Pack Blister - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-2-Pack-Blister-Random-Promo/3CAMCNJRUT5S",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
       "name": "AH First Partners Deluxe Pin Collection - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Mega-Evolution-Ascended-Heroes-First-Partners-Deluxe-Pin-Collection/0TO5AC8OZGLK",
-      "enabled": false,
+      "enabled": true,
       "priority": "normal"
     },
     {
@@ -335,7 +349,7 @@
     {
       "name": "Pokemon Day 2026 Collection - Walmart.ca",
       "url": "https://www.walmart.ca/en/ip/Pok-mon-TCG-Pok-mon-Day-2026-Collection/70PH2R4R8A83",
-      "enabled": false
+      "enabled": true
     },
     {
       "name": "PE Booster Box - Costco.ca",

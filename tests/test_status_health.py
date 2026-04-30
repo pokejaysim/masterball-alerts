@@ -1,12 +1,14 @@
 import unittest
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from status_health import (
     classify_snapshot,
     launchagent_status,
     parse_log_timestamp,
     summarize_retailer_health,
+    walmart_health_summary,
 )
 
 
@@ -77,7 +79,21 @@ gui/501/com.masterball.alerts = {
         self.assertEqual(amazon["blocked"], 3)
         self.assertEqual(amazon["success"], 1)
 
+    def test_walmart_health_reports_proxy_and_queue(self):
+        db = {"walmart_discovery": {"approved": 4, "pending": 9, "pending_validation": 3}}
+        config = {
+            "walmart": {"enabled": True},
+            "products": [
+                {"name": "Pokemon TCG Booster Bundle - Walmart.ca", "url": "https://www.walmart.ca/en/ip/example/12345678", "enabled": True}
+            ],
+        }
+        lines = ["[2026-04-29 16:20:06] Walmart blocked: Walmart proxy not configured"]
+        with patch("status_health.walmart_proxy_ready", return_value=False):
+            summary = walmart_health_summary(config, db, lines)
+        self.assertEqual(summary["active_product_count"], 5)
+        self.assertEqual(summary["pending_validation_count"], 3)
+        self.assertEqual(summary["lane_state"], "blocked")
+
 
 if __name__ == "__main__":
     unittest.main()
-

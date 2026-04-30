@@ -68,9 +68,9 @@ Discovery now runs automatically from the monitor. Defaults in `config.json`:
 - `auto_run`: enabled
 - `auto_run_interval_minutes`: every 3 hours
 - `auto_approve`: enabled for high-confidence matches
-- `auto_approve_retailers`: Costco, Best Buy, EB Games
+- `auto_approve_retailers`: Costco, Best Buy, EB Games, Walmart
 
-Amazon and Pokemon Center still stay review-first by default because they are noisier/protected.
+Amazon and Pokemon Center still stay review-first by default because they are noisier/protected. Walmart is automatic only after protected validation succeeds.
 
 Run discovery manually any time:
 
@@ -96,7 +96,28 @@ To skip manual review for high-confidence retailer matches:
 ./control.sh discover-auto-add
 ```
 
-Auto-add uses the guardrails in `config.json` under `discovery`: minimum confidence `0.82`, default retailers Costco, Best Buy, and EB Games. Walmart, Amazon, and Pokemon Center stay review-first by default because they are noisier/protected.
+Auto-add uses the guardrails in `config.json` under `discovery`: minimum confidence `0.82`, default retailers Costco, Best Buy, EB Games, and Walmart. Walmart candidates must pass a live protected validation first; blocked or unclear Walmart pages stay pending.
+
+## 🛒 Walmart Protected Lane
+
+Walmart.ca checks are proxy-gated and browser-confirmed before a stock alert can fire.
+
+```bash
+./control.sh doctor-walmart
+./control.sh discover-walmart-dry-run
+./control.sh test-product "https://www.walmart.ca/en/ip/example/12345678"
+```
+
+Put residential proxy credentials in `walmart_proxy.local.json`:
+
+```json
+{
+  "proxy_url": "http://user:pass@host:port",
+  "enabled": true
+}
+```
+
+If the proxy is missing or Walmart blocks validation, Walmart products are not marked sold out and new discoveries stay pending.
 
 ## 📱 How It Works
 
@@ -143,6 +164,8 @@ The status page is an internal Mac Mini tool. It binds to `127.0.0.1` by default
 Open: `http://127.0.0.1:8787`
 
 It shows whether the monitor LaunchAgent is running, how fresh the logs are, active product counts, discovery queue counts, retailer degradation signals, and the recent log tail. If the monitor is down or stale, it shows the exact control commands to run next.
+
+The page also shows Walmart lane state, active Walmart product count, pending Walmart validation count, and whether the Walmart proxy is configured.
 
 ## 🔧 Troubleshooting
 

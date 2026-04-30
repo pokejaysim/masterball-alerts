@@ -28,6 +28,8 @@ from settings import MONITOR_DIR, load_config, load_json_with_local_override
 from product_utils import (
     PROTECTED_RETAILERS,
     STOCK_BLOCKED,
+    STOCK_IN,
+    STOCK_MARKETPLACE,
     STOCK_UNKNOWN,
     StockResult,
     escape_html,
@@ -36,6 +38,11 @@ from product_utils import (
     retailer_display_name,
     retailer_from_url,
     stock_transition,
+)
+from walmart_protected import (
+    check_walmart_lightweight,
+    walmart_proxy_ready,
+    walmart_settings_from_config,
 )
 
 # Thread-local storage for per-thread HTTP sessions and state
@@ -641,16 +648,27 @@ _browser_backoff = {}  # normalized_url -> {"next_allowed": float, "failures": i
 _degraded_notices = {}  # retailer -> last_notice_time
 _discovery_lock = threading.Lock()
 _discovery_reload_requested = threading.Event()
+_walmart_last_checked = {}
+_walmart_lightweight_backoff = {}
 BROWSER_MIN_INTERVAL_SECONDS = 180
 BROWSER_MAX_BACKOFF_SECONDS = 3600
 
 
-def _browser_lane_allowed(product):
+def _browser_min_interval_seconds(url):
+    if retailer_from_url(url) == "walmart":
+        try:
+            return walmart_settings_from_config(load_config())["browser_confirm_interval_seconds"]
+        except Exception:
+            pass
+    return BROWSER_MIN_INTERVAL_SECONDS
+
+
+def _browser_lane_allowed(product, require_high_priority=True):
     url = product.get("url", "")
     retailer = retailer_from_url(url)
     if retailer not in PROTECTED_RETAILERS:
         return False, "not protected"
-    if product.get("priority") != "high":
+    if require_high_priority and product.get("priority") != "high":
         return False, "not high priority"
 
     key = normalize_url(url)
@@ -671,11 +689,14 @@ def _record_browser_lane_result(url, blocked=False):
         state["next_allowed"] = now + backoff
     else:
         state["failures"] = 0
-        state["next_allowed"] = now + BROWSER_MIN_INTERVAL_SECONDS
+        state["next_allowed"] = now + _browser_min_interval_seconds(url)
 
 
-def check_walmart_browser_lane(product):
-    allowed, reason = _browser_lane_allowed(product)
+def check_walmart_browser_lane(product, require_high_priority=True):
+    if not walmart_proxy_ready():
+        return StockResult.blocked(reason="Walmart proxy not configured")
+
+    allowed, reason = _browser_lane_allowed(product, require_high_priority=require_high_priority)
     if not allowed:
         return StockResult.blocked(reason=reason) if "backoff" in str(reason) else StockResult.unknown(reason=reason)
 
@@ -703,6 +724,32 @@ def check_walmart_browser_lane(product):
         return StockResult.unknown(reason=f"browser check failed: {e}")
     finally:
         _browser_lane_lock.release()
+
+
+def select_walmart_products_for_cycle(products, settings, now=None):
+    if not settings.get("enabled", True):
+        return []
+    now = now or time.time()
+    interval = settings["lightweight_interval_seconds"]
+    max_products = settings["max_products_per_cycle"]
+    due = []
+    for product in products:
+        key = normalize_url(product.get("url", ""))
+        if now < _walmart_lightweight_backoff.get(key, 0):
+            continue
+        if now - _walmart_last_checked.get(key, 0) >= interval:
+            due.append(product)
+        if len(due) >= max_products:
+            break
+    return due
+
+
+def record_walmart_check_result(product, result, settings, now=None):
+    now = now or time.time()
+    key = normalize_url(product.get("url", ""))
+    _walmart_last_checked[key] = now
+    if result.status == STOCK_BLOCKED:
+        _walmart_lightweight_backoff[key] = now + settings["block_backoff_seconds"]
 
 
 # ---------------------------------------------------------------------------
@@ -847,64 +894,35 @@ def check_walmart_camoufox(url):
     return None
 
 def check_walmart(url, product=None):
-    TRUSTED_SELLERS = ['walmart', 'walmart canada', 'walmart.ca']
     try:
-        response = cffi_get_with_fallback(url)
-        html = response.text if response else ""
-        if not response:
-            log(f"  ⚠️  Walmart: no response")
-            result = StockResult.blocked(reason="no response")
-            if product:
-                browser_result = check_walmart_browser_lane(product)
-                return browser_result if not browser_result.is_indeterminate else result
-            return result
-
-        if response.status_code in (403, 429, 520, 530):
-            log(f"  ⚠️  Walmart blocked/status {response.status_code}")
-            result = StockResult.blocked(reason=f"status {response.status_code}")
-            if product:
-                browser_result = check_walmart_browser_lane(product)
-                return browser_result if not browser_result.is_indeterminate else result
-            return result
-        
-        # Check for CAPTCHA (only if page is small = blocked)
-        if len(html) < 15000 and 'captcha' in html.lower():
-            log(f"  ⚠️  Walmart CAPTCHA — Camoufox blocked")
-            result = StockResult.blocked(reason="Walmart CAPTCHA")
-            if product:
-                browser_result = check_walmart_browser_lane(product)
-                return browser_result if not browser_result.is_indeterminate else result
-            return result
-        
-        json_match = re.search(r'<script[^>]*id="__NEXT_DATA__"[^>]*>(.*?)</script>', html, re.DOTALL)
-        if json_match:
-            try:
-                data_str = json.dumps(json.loads(json_match.group(1)))
-                seller_match = re.search(r'"sellerName"\s*:\s*"([^"]+)"', data_str)
-                seller_name = seller_match.group(1) if seller_match else ''
-                price_match = re.search(r'"currentPrice"\s*:\s*\{[^}]*"price"\s*:\s*([0-9.]+)', data_str)
-                price = price_match.group(1) if price_match else None
+        result = check_walmart_lightweight(url)
+        if result.status == STOCK_IN:
+            if not product:
+                return StockResult.unknown(price=result.price, seller=result.seller, reason="Walmart browser confirmation required")
+            browser_result = check_walmart_browser_lane(product, require_high_priority=False)
+            if browser_result.status == STOCK_IN:
+                price = browser_result.price or result.price
+                seller = browser_result.seller or result.seller
                 if product and price:
                     set_detected_price(product["name"], price)
+                log(f"  ✅ Walmart: In stock | Seller: {seller or 'trusted'} (browser confirmed)")
+                return StockResult.in_stock(price=price, seller=seller, reason="browser confirmed")
+            if browser_result.is_indeterminate:
+                reason = browser_result.reason or browser_result.status
+                return StockResult.unknown(price=result.price, seller=result.seller, reason=f"Walmart browser confirmation failed: {reason}")
+            return browser_result
 
-                is_trusted = any(t in seller_name.lower() for t in TRUSTED_SELLERS)
-                is_in_stock = '"availabilityStatus":"IN_STOCK"' in data_str or '"availabilityStatus": "IN_STOCK"' in data_str
-
-                if not is_in_stock:
-                    return StockResult.out_of_stock(price=price, seller=seller_name)
-                if is_trusted:
-                    log(f"  ✅ Walmart: In stock | Seller: {seller_name} (trusted)")
-                    return StockResult.in_stock(price=price, seller=seller_name)
-                else:
-                    log(f"  ⚠️  In stock but sold by '{seller_name}' (marketplace) — skipping")
-                    return StockResult.marketplace(price=price, seller=seller_name, reason="marketplace seller")
-            except json.JSONDecodeError:
-                pass
-
-        result = StockResult.unknown(reason="Walmart JSON not found")
-        if product:
-            browser_result = check_walmart_browser_lane(product)
+        if result.status == STOCK_BLOCKED and product:
+            log(f"  ⚠️  Walmart blocked: {result.reason or 'blocked'}")
+            browser_result = check_walmart_browser_lane(product, require_high_priority=True)
             return browser_result if not browser_result.is_indeterminate else result
+
+        if result.status == STOCK_UNKNOWN and product and product.get("priority") == "high":
+            browser_result = check_walmart_browser_lane(product, require_high_priority=True)
+            return browser_result if not browser_result.is_indeterminate else result
+
+        if result.status == STOCK_MARKETPLACE:
+            log(f"  ⚠️  In stock but sold by '{result.seller or 'unknown'}' (marketplace) — skipping")
         return result
     except Exception as e:
         log(f"  ❌ Error checking Walmart: {e}")
@@ -1165,6 +1183,7 @@ def monitor_loop():
     use_telegram = bool(bot_token and chat_id)
     check_interval = config.get('check_interval', 30)
     discovery_settings = discovery_settings_from_config(config)
+    walmart_settings = walmart_settings_from_config(config)
 
     enabled_products = load_enabled_products(config)
     
@@ -1178,6 +1197,7 @@ def monitor_loop():
     log(f"🔄 Async parallel checking: ENABLED")
     log(f"🛡️  CAPTCHA fallback profiles: {CFFI_PROFILES}")
     log(f"🔁 Alert cooldown: {ALERT_COOLDOWN_SECONDS}s")
+    log(f"🛒 Walmart lane: {'ENABLED' if walmart_settings.get('enabled') else 'DISABLED'} | proxy {'configured' if walmart_proxy_ready() else 'missing'}")
     log("─" * 50)
 
     def alert(message, channel_too=False):
@@ -1216,6 +1236,7 @@ def monitor_loop():
             hot_products = [p for p in enabled_products if 'amazon' in p['url'] and any(tag in p['name'] for tag in ['PE ', 'AH '])]
             non_walmart = [p for p in enabled_products if 'walmart.ca' not in p['url']]
             walmart_products = [p for p in enabled_products if 'walmart.ca' in p['url']]
+            due_walmart_products = select_walmart_products_for_cycle(walmart_products, walmart_settings)
             
             all_results = []
             
@@ -1225,9 +1246,10 @@ def monitor_loop():
                 for future in as_completed(futures):
                     all_results.append(future.result())
             
-            # Check Walmart products sequentially because protected-browser fallback is single-lane.
-            for p in walmart_products:
+            # Check due Walmart products on a protected, rate-limited lane.
+            for p in due_walmart_products:
                 result = check_product_wrapper(p)
+                record_walmart_check_result(p, result[1], walmart_settings)
                 all_results.append(result)
                 time.sleep(2)  # Delay between Walmart checks to avoid detection
             
@@ -1244,7 +1266,8 @@ def monitor_loop():
                     if USE_DB:
                         increment_daily_stat('captchas_hit')
                         db_log_error(retailer, 'blocked', reason)
-                    notify_degraded(retailer, reason, bot_token, chat_id)
+                    if retailer != "walmart" or walmart_settings.get("owner_degraded_alerts", True):
+                        notify_degraded(retailer, reason, bot_token, chat_id)
                 elif result.status == STOCK_UNKNOWN:
                     log(f"❔ Unknown stock state for {name}: {result.reason or 'no reason'}")
                     if USE_DB:
@@ -1311,6 +1334,7 @@ def monitor_loop():
                     use_telegram = bool(bot_token and chat_id)
                     check_interval = new_config.get('check_interval', 30)
                     discovery_settings = discovery_settings_from_config(new_config)
+                    walmart_settings = walmart_settings_from_config(new_config)
                 except:
                     pass
                 last_config_check = time.time()

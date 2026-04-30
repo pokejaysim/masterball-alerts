@@ -2,5 +2,18 @@
   "telegram_bot_token": "123456:your-bot-token",
   "telegram_chat_id": "your-owner-chat-id",
   "telegram_channel_id": "optional-channel-id",
-  "pricecharting_token": "optional-pricecharting-token"
+  "pricecharting_token": "optional-pricecharting-token",
+  "walmart": {
+    "enabled": true,
+    "auto_add_after_validation": true,
+    "coverage": "all_tcg",
+    "require_trusted_seller": true,
+    "require_proxy": true,
+    "lightweight_interval_minutes": 10,
+    "browser_confirm_interval_minutes": 30,
+    "max_browser_pages": 1,
+    "max_products_per_cycle": 3,
+    "block_backoff_minutes": 30,
+    "owner_degraded_alerts": true
+  }
 }

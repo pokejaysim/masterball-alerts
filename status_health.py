@@ -13,6 +13,7 @@ import time
 
 from database import DB_PATH
 from settings import MONITOR_DIR, load_config
+from walmart_protected import walmart_proxy_ready, walmart_settings_from_config
 
 
 DEFAULT_LABEL = "com.masterball.alerts"
@@ -220,6 +221,16 @@ def database_summary(db_path: str = DB_PATH) -> dict:
             "ignored": _count_rows(conn, "discovery_candidates", "status = 'ignored'"),
             "expired": _count_rows(conn, "discovery_candidates", "status = 'expired'"),
         }
+        walmart_discovery = {
+            "approved": _count_rows(conn, "discovery_candidates", "retailer = 'walmart' AND status = 'approved'"),
+            "pending": _count_rows(conn, "discovery_candidates", "retailer = 'walmart' AND status = 'pending'"),
+            "ignored": _count_rows(conn, "discovery_candidates", "retailer = 'walmart' AND status = 'ignored'"),
+            "pending_validation": _count_rows(
+                conn,
+                "discovery_candidates",
+                "retailer = 'walmart' AND status = 'pending' AND COALESCE(reason, '') LIKE 'walmart validation%'",
+            ),
+        }
         stock = {
             "tracked": _count_rows(conn, "stock_status"),
             "in_stock": _count_rows(conn, "stock_status", "in_stock = 1"),
@@ -243,6 +254,7 @@ def database_summary(db_path: str = DB_PATH) -> dict:
             "available": True,
             "path": db_path,
             "discovery": discovery,
+            "walmart_discovery": walmart_discovery,
             "stock": stock,
             "alerts_today": alerts_today,
             "recent_alerts": recent_alerts,
@@ -261,6 +273,49 @@ def product_summary(config: dict | None = None, db: dict | None = None) -> dict:
         "approved_dynamic": approved_dynamic,
         "active_total": seed_enabled + approved_dynamic,
         "check_interval": int(config.get("check_interval", 30)),
+    }
+
+
+def walmart_health_summary(config: dict, db: dict, lines: list[str]) -> dict:
+    settings = walmart_settings_from_config(config)
+    seed_active = sum(
+        1
+        for product in config.get("products", [])
+        if product.get("enabled", True) and "walmart.ca" in product.get("url", "").lower()
+    )
+    approved_dynamic = int(db.get("walmart_discovery", {}).get("approved", 0))
+    pending = int(db.get("walmart_discovery", {}).get("pending", 0))
+    pending_validation = int(db.get("walmart_discovery", {}).get("pending_validation", 0))
+    last_success = latest_line_containing(lines, "Walmart: In stock", "browser confirmed")
+    last_block = latest_line_containing(lines, "Walmart CAPTCHA", "Walmart blocked", "Walmart proxy not configured", "Walmart returned 402", "Walmart returned 403", "Walmart returned 429")
+    proxy_configured = walmart_proxy_ready()
+
+    if not settings.get("enabled", True):
+        lane_state = "idle"
+    elif not proxy_configured:
+        lane_state = "blocked"
+    elif last_block and not last_success:
+        lane_state = "blocked"
+    elif last_block:
+        lane_state = "degraded"
+    elif last_success:
+        lane_state = "ok"
+    elif seed_active + approved_dynamic + pending > 0:
+        lane_state = "degraded"
+    else:
+        lane_state = "idle"
+
+    return {
+        "enabled": bool(settings.get("enabled", True)),
+        "lane_state": lane_state,
+        "proxy_configured": proxy_configured,
+        "active_product_count": seed_active + approved_dynamic,
+        "seed_active_count": seed_active,
+        "approved_dynamic_count": approved_dynamic,
+        "pending_count": pending,
+        "pending_validation_count": pending_validation,
+        "last_successful_check": last_success,
+        "last_block": last_block,
     }
 
 
@@ -302,6 +357,7 @@ def build_snapshot(
     last_log_at = latest_log_time(lines)
     last_log_age_seconds = (now - last_log_at).total_seconds() if last_log_at else None
     retailers = summarize_retailer_health(lines)
+    walmart = walmart_health_summary(config, db, lines)
     service = service or launchagent_status(service_label)
     stale_seconds = int(stale_minutes * 60)
     overall, message = classify_snapshot(service, last_log_age_seconds, stale_seconds, retailers)
@@ -322,11 +378,19 @@ def build_snapshot(
             "tail": lines[-40:],
         },
         "retailers": retailers,
-        "actions": action_suggestions(overall),
+        "walmart": walmart,
+        "actions": action_suggestions(overall, walmart),
     }
 
 
-def action_suggestions(overall: str) -> list[str]:
+def action_suggestions(overall: str, walmart: dict | None = None) -> list[str]:
+    walmart = walmart or {}
+    if walmart.get("lane_state") in {"blocked", "degraded"}:
+        return [
+            "./control.sh doctor-walmart",
+            "./control.sh discover-walmart-dry-run",
+            "./control.sh logs",
+        ]
     if overall == "down":
         return [
             "./control.sh status",
