@@ -4,6 +4,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from status_health import (
+    apply_safe_mode_to_retailers,
     classify_snapshot,
     launchagent_status,
     parse_log_timestamp,
@@ -66,6 +67,32 @@ gui/501/com.masterball.alerts = {
         )
         self.assertEqual(status, "degraded")
         self.assertIn("Amazon", message)
+
+    def test_safe_mode_marks_retailer_as_paused(self):
+        rows = [{"key": "amazon", "name": "Amazon", "status": "degraded", "note": "Blocks"}]
+        safe_mode = {
+            "paused": {
+                "amazon": {
+                    "remaining_seconds": 1800,
+                    "paused_until": 2000,
+                    "reason": "3 blocked responses in 3 checks",
+                }
+            }
+        }
+
+        updated = apply_safe_mode_to_retailers(rows, safe_mode)
+        self.assertEqual(updated[0]["status"], "paused")
+        self.assertIn("Paused", updated[0]["note"])
+
+        status, message = classify_snapshot(
+            {"running": True},
+            last_log_age_seconds=10,
+            stale_seconds=300,
+            retailers=updated,
+            safe_mode=safe_mode,
+        )
+        self.assertEqual(status, "degraded")
+        self.assertIn("Safe mode active", message)
 
     def test_retailer_summary_counts_blocks_and_successes(self):
         retailers = summarize_retailer_health([

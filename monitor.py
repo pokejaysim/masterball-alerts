@@ -21,6 +21,7 @@ import hashlib
 import signal
 import threading
 import sys
+from collections import Counter, defaultdict
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -64,6 +65,8 @@ signal.signal(signal.SIGINT, _handle_signal)
 STOCK_STATUS_FILE = os.path.join(MONITOR_DIR, "stock_status.json")
 TIMESTAMPS_FILE = os.path.join(MONITOR_DIR, "check_timestamps.json")
 ALERT_COOLDOWNS_FILE = os.path.join(MONITOR_DIR, "alert_cooldowns.json")
+RETAILER_SAFE_MODE_FILE = os.path.join(MONITOR_DIR, "retailer_safe_mode.json")
+RETAILER_SAFE_MODE_KEY = "retailer_safe_mode"
 
 ALERT_COOLDOWN_SECONDS = 1800  # 30 minutes
 
@@ -73,7 +76,7 @@ try:
                           add_alert, update_timestamp as db_update_timestamp,
                           check_cooldown as db_check_cooldown, set_cooldown as db_set_cooldown,
                           log_error as db_log_error, increment_daily_stat,
-                          get_approved_products)
+                          get_approved_products, get_bot_state, set_bot_state)
     USE_DB = True
 except ImportError:
     USE_DB = False
@@ -1113,6 +1116,140 @@ def notify_degraded(retailer, reason, bot_token, chat_id):
     )
 
 
+def safe_mode_settings_from_config(config):
+    raw = config.get("safe_mode", {})
+    default_retailers = ["amazon", "bestbuy", "costco", "ebgames", "walmart", "pokemoncenter"]
+    retailers = raw.get("retailers", default_retailers)
+    if not isinstance(retailers, list):
+        retailers = default_retailers
+
+    return {
+        "enabled": bool(raw.get("enabled", True)),
+        "backoff_seconds": max(300, int(raw.get("backoff_minutes", 45)) * 60),
+        "blocked_threshold": max(1, int(raw.get("blocked_threshold_per_cycle", 3))),
+        "unknown_threshold": max(1, int(raw.get("unknown_threshold_per_cycle", 4))),
+        "min_checks": max(1, int(raw.get("min_checks_per_cycle", 3))),
+        "retailers": {str(retailer).lower() for retailer in retailers},
+    }
+
+
+def _normalize_safe_mode_state(raw_state):
+    state = {}
+    if not isinstance(raw_state, dict):
+        return state
+
+    for retailer, pause in raw_state.items():
+        if not isinstance(pause, dict):
+            continue
+        try:
+            paused_until = float(pause.get("paused_until", 0))
+        except (TypeError, ValueError):
+            continue
+        key = str(retailer).lower()
+        state[key] = {
+            "paused_until": paused_until,
+            "reason": str(pause.get("reason") or "retailer checks degraded"),
+            "blocked": int(pause.get("blocked", 0) or 0),
+            "unknown": int(pause.get("unknown", 0) or 0),
+            "total": int(pause.get("total", 0) or 0),
+            "set_at": float(pause.get("set_at", 0) or 0),
+        }
+    return state
+
+
+def load_retailer_safe_mode_state():
+    try:
+        if USE_DB:
+            raw = get_bot_state(RETAILER_SAFE_MODE_KEY, "{}")
+            return _normalize_safe_mode_state(json.loads(raw or "{}"))
+        if os.path.exists(RETAILER_SAFE_MODE_FILE):
+            return _normalize_safe_mode_state(load_json(RETAILER_SAFE_MODE_FILE))
+    except Exception as e:
+        log(f"⚠️  Could not load retailer safe mode state: {e}")
+    return {}
+
+
+def save_retailer_safe_mode_state(state):
+    normalized = _normalize_safe_mode_state(state)
+    try:
+        if USE_DB:
+            set_bot_state(RETAILER_SAFE_MODE_KEY, json.dumps(normalized, sort_keys=True))
+            return
+        save_json(RETAILER_SAFE_MODE_FILE, normalized)
+    except Exception as e:
+        log(f"⚠️  Could not save retailer safe mode state: {e}")
+
+
+def prune_expired_retailer_pauses(state, now=None):
+    now = time.time() if now is None else now
+    normalized = _normalize_safe_mode_state(state)
+    active = {}
+    expired = []
+    for retailer, pause in normalized.items():
+        if float(pause.get("paused_until", 0)) > now:
+            active[retailer] = pause
+        else:
+            expired.append(retailer)
+    return active, expired
+
+
+def retailer_pause_remaining(retailer, state, now=None):
+    now = time.time() if now is None else now
+    pause = _normalize_safe_mode_state(state).get(str(retailer).lower())
+    if not pause:
+        return 0
+    return max(0, int(float(pause.get("paused_until", 0)) - now))
+
+
+def is_retailer_paused(retailer, state, now=None):
+    return retailer_pause_remaining(retailer, state, now=now) > 0
+
+
+def update_retailer_safe_mode_state(stats, settings, state=None, now=None):
+    now = time.time() if now is None else now
+    state, expired = prune_expired_retailer_pauses(state or {}, now=now)
+    if not settings.get("enabled", True):
+        return state, []
+
+    new_pauses = []
+    for retailer, counts in (stats or {}).items():
+        key = str(retailer).lower()
+        if key not in settings["retailers"]:
+            continue
+        total = int(counts.get("total", 0))
+        blocked = int(counts.get("blocked", 0))
+        unknown = int(counts.get("unknown", 0))
+        if total < settings["min_checks"]:
+            continue
+        if blocked < settings["blocked_threshold"] and unknown < settings["unknown_threshold"]:
+            continue
+
+        existing_until = float(state.get(key, {}).get("paused_until", 0))
+        if existing_until > now:
+            continue
+
+        reasons = []
+        if blocked >= settings["blocked_threshold"]:
+            reasons.append(f"{blocked} blocked")
+        if unknown >= settings["unknown_threshold"]:
+            reasons.append(f"{unknown} unknown")
+        reason = " and ".join(reasons) + f" responses in {total} checks"
+        state[key] = {
+            "paused_until": now + settings["backoff_seconds"],
+            "reason": reason,
+            "blocked": blocked,
+            "unknown": unknown,
+            "total": total,
+            "set_at": now,
+        }
+        new_pauses.append((key, state[key]))
+    return state, new_pauses
+
+
+def _minutes_label(seconds):
+    return f"{max(1, int(round(seconds / 60)))}m"
+
+
 def discovery_settings_from_config(config):
     discovery = config.get("discovery", {})
     return {
@@ -1184,6 +1321,8 @@ def monitor_loop():
     check_interval = config.get('check_interval', 30)
     discovery_settings = discovery_settings_from_config(config)
     walmart_settings = walmart_settings_from_config(config)
+    safe_mode_settings = safe_mode_settings_from_config(config)
+    retailer_safe_mode_state = load_retailer_safe_mode_state()
 
     enabled_products = load_enabled_products(config)
     
@@ -1198,6 +1337,7 @@ def monitor_loop():
     log(f"🛡️  CAPTCHA fallback profiles: {CFFI_PROFILES}")
     log(f"🔁 Alert cooldown: {ALERT_COOLDOWN_SECONDS}s")
     log(f"🛒 Walmart lane: {'ENABLED' if walmart_settings.get('enabled') else 'DISABLED'} | proxy {'configured' if walmart_proxy_ready() else 'missing'}")
+    log(f"⏸️  Retailer safe mode: {'ENABLED' if safe_mode_settings.get('enabled') else 'DISABLED'} | backoff {_minutes_label(safe_mode_settings['backoff_seconds'])}")
     log("─" * 50)
 
     def alert(message, channel_too=False):
@@ -1226,16 +1366,37 @@ def monitor_loop():
     last_review_poll = 0
     monitor_started_at = time.time()
     last_auto_discovery_started = 0
-    error_counts = {}  # Track errors per retailer per cycle
 
     while True:
         try:
             cycle_start = time.time()
+            now = time.time()
+            retailer_safe_mode_state = load_retailer_safe_mode_state()
+
+            pruned_state, expired_pauses = prune_expired_retailer_pauses(retailer_safe_mode_state, now=now)
+            if pruned_state != retailer_safe_mode_state:
+                retailer_safe_mode_state = pruned_state
+                save_retailer_safe_mode_state(retailer_safe_mode_state)
+            for retailer in expired_pauses:
+                log(f"▶️  Safe mode ended for {retailer_display_name(retailer)}")
+
+            cycle_products = []
+            paused_counts = Counter()
+            for product in enabled_products:
+                retailer = retailer_from_url(product.get("url", ""))
+                if safe_mode_settings.get("enabled") and is_retailer_paused(retailer, retailer_safe_mode_state, now=now):
+                    paused_counts[retailer] += 1
+                    continue
+                cycle_products.append(product)
+            for retailer, count in paused_counts.items():
+                remaining = retailer_pause_remaining(retailer, retailer_safe_mode_state, now=now)
+                reason = retailer_safe_mode_state.get(retailer, {}).get("reason", "retailer checks degraded")
+                log(f"⏸️  Safe mode skipping {count} {retailer_display_name(retailer)} products for {_minutes_label(remaining)}: {reason}")
 
             # --- Split products: hot (PE/AH Amazon), regular, Walmart ---
-            hot_products = [p for p in enabled_products if 'amazon' in p['url'] and any(tag in p['name'] for tag in ['PE ', 'AH '])]
-            non_walmart = [p for p in enabled_products if 'walmart.ca' not in p['url']]
-            walmart_products = [p for p in enabled_products if 'walmart.ca' in p['url']]
+            hot_products = [p for p in cycle_products if 'amazon' in p['url'] and any(tag in p['name'] for tag in ['PE ', 'AH '])]
+            non_walmart = [p for p in cycle_products if 'walmart.ca' not in p['url']]
+            walmart_products = [p for p in cycle_products if 'walmart.ca' in p['url']]
             due_walmart_products = select_walmart_products_for_cycle(walmart_products, walmart_settings)
             
             all_results = []
@@ -1253,14 +1414,21 @@ def monitor_loop():
                 all_results.append(result)
                 time.sleep(2)  # Delay between Walmart checks to avoid detection
             
+            cycle_retailer_stats = defaultdict(Counter)
             for product, result in all_results:
                 name = product['name']
                 url = product['url']
+                retailer = retailer_from_url(url)
+                cycle_retailer_stats[retailer]["total"] += 1
+                if result.status == STOCK_BLOCKED:
+                    cycle_retailer_stats[retailer]["blocked"] += 1
+                elif result.status == STOCK_UNKNOWN:
+                    cycle_retailer_stats[retailer]["unknown"] += 1
+
                 prev_status = stock_status.get(name, False)
                 new_status, transition = stock_transition(prev_status, result)
 
                 if result.status == STOCK_BLOCKED:
-                    retailer = retailer_from_url(url)
                     reason = result.reason or "blocked"
                     log(f"🛡️  Preserving state for {name}: {reason}")
                     if USE_DB:
@@ -1287,6 +1455,35 @@ def monitor_loop():
                 stock_status[name] = new_status
                 if USE_DB and not result.is_indeterminate:
                     set_stock_status(name, new_status)
+
+            previous_safe_mode_state = retailer_safe_mode_state
+            retailer_safe_mode_state, new_pauses = update_retailer_safe_mode_state(
+                cycle_retailer_stats,
+                safe_mode_settings,
+                retailer_safe_mode_state,
+                now=time.time(),
+            )
+            if new_pauses or retailer_safe_mode_state != previous_safe_mode_state:
+                save_retailer_safe_mode_state(retailer_safe_mode_state)
+            for retailer, pause in new_pauses:
+                remaining = retailer_pause_remaining(retailer, retailer_safe_mode_state)
+                message = (
+                    f"⏸️ <b>{escape_html(retailer_display_name(retailer))} safe mode</b>\n\n"
+                    f"Paused for {_minutes_label(remaining)} after {escape_html(pause.get('reason'))}.\n"
+                    f"Stock state was preserved. The rest of the monitor is still running."
+                )
+                log(f"⏸️  Safe mode started for {retailer_display_name(retailer)}: {pause.get('reason')}")
+                alert(message, channel_too=False)
+
+            if new_pauses:
+                hot_products = [
+                    product
+                    for product in hot_products
+                    if not (
+                        safe_mode_settings.get("enabled")
+                        and is_retailer_paused(retailer_from_url(product.get("url", "")), retailer_safe_mode_state)
+                    )
+                ]
 
             # Process "still live" follow-ups
             process_followups(stock_status, bot_token, stock_alert_chat_id)
@@ -1335,6 +1532,7 @@ def monitor_loop():
                     check_interval = new_config.get('check_interval', 30)
                     discovery_settings = discovery_settings_from_config(new_config)
                     walmart_settings = walmart_settings_from_config(new_config)
+                    safe_mode_settings = safe_mode_settings_from_config(new_config)
                 except:
                     pass
                 last_config_check = time.time()

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from collections import Counter, deque
 from datetime import datetime
+import json
 import os
 import re
 import sqlite3
@@ -33,6 +34,7 @@ RETAILER_KEYWORDS = {
 BLOCKED_WORDS = ("blocked", "captcha", "403", "429", "503")
 ERROR_WORDS = ("error checking", "failed", "timed out", "timeout", "no response")
 SUCCESS_WORDS = (" in stock", "sold by:", "trusted", "telegram message sent")
+SAFE_MODE_KEY = "retailer_safe_mode"
 
 
 def parse_log_timestamp(line: str) -> datetime | None:
@@ -263,6 +265,101 @@ def database_summary(db_path: str = DB_PATH) -> dict:
         return {"available": False, "path": db_path, "error": str(exc)}
 
 
+def _now_timestamp(now=None) -> float:
+    if isinstance(now, datetime):
+        return now.timestamp()
+    if now is None:
+        return time.time()
+    return float(now)
+
+
+def _safe_mode_from_raw(raw_value: str | None, now=None) -> dict:
+    now_ts = _now_timestamp(now)
+    paused = {}
+    try:
+        raw = json.loads(raw_value or "{}")
+    except (TypeError, ValueError):
+        raw = {}
+
+    if not isinstance(raw, dict):
+        raw = {}
+
+    for retailer, pause in raw.items():
+        if not isinstance(pause, dict):
+            continue
+        try:
+            paused_until = float(pause.get("paused_until", 0))
+        except (TypeError, ValueError):
+            continue
+        remaining = int(paused_until - now_ts)
+        if remaining <= 0:
+            continue
+        paused[str(retailer).lower()] = {
+            "paused_until": paused_until,
+            "remaining_seconds": remaining,
+            "reason": str(pause.get("reason") or "retailer checks degraded"),
+            "blocked": int(pause.get("blocked", 0) or 0),
+            "unknown": int(pause.get("unknown", 0) or 0),
+            "total": int(pause.get("total", 0) or 0),
+            "set_at": float(pause.get("set_at", 0) or 0),
+        }
+
+    return {"paused": paused, "paused_count": len(paused)}
+
+
+def safe_mode_summary(db_path: str = DB_PATH, now=None) -> dict:
+    if not os.path.exists(db_path):
+        fallback = os.path.join(MONITOR_DIR, "retailer_safe_mode.json")
+        if os.path.exists(fallback):
+            try:
+                with open(fallback, encoding="utf-8") as handle:
+                    return _safe_mode_from_raw(handle.read(), now=now) | {"available": True, "source": "json"}
+            except OSError as exc:
+                return {"available": False, "paused": {}, "paused_count": 0, "error": str(exc)}
+        return {"available": False, "paused": {}, "paused_count": 0, "error": "database file missing"}
+
+    try:
+        conn = sqlite3.connect(db_path)
+        try:
+            has_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name = 'bot_state'",
+            ).fetchone()
+            if not has_table:
+                return {"available": True, "source": "database", "paused": {}, "paused_count": 0}
+            row = conn.execute("SELECT value FROM bot_state WHERE key = ?", (SAFE_MODE_KEY,)).fetchone()
+            summary = _safe_mode_from_raw(row[0] if row else "{}", now=now)
+            summary.update({"available": True, "source": "database"})
+            return summary
+        finally:
+            conn.close()
+    except sqlite3.Error as exc:
+        return {"available": False, "paused": {}, "paused_count": 0, "error": str(exc)}
+
+
+def _minutes_remaining(seconds: int) -> int:
+    return max(1, int(round(max(0, seconds) / 60)))
+
+
+def apply_safe_mode_to_retailers(retailers: list[dict], safe_mode: dict | None) -> list[dict]:
+    paused = (safe_mode or {}).get("paused", {})
+    if not paused:
+        return retailers
+
+    rows = []
+    for row in retailers:
+        pause = paused.get(row.get("key"))
+        if not pause:
+            rows.append(row)
+            continue
+        updated = dict(row)
+        updated["status"] = "paused"
+        updated["note"] = f"Paused for {_minutes_remaining(pause['remaining_seconds'])}m: {pause['reason']}"
+        updated["paused_until"] = pause["paused_until"]
+        updated["remaining_seconds"] = pause["remaining_seconds"]
+        rows.append(updated)
+    return rows
+
+
 def product_summary(config: dict | None = None, db: dict | None = None) -> dict:
     config = config if config is not None else load_config()
     db = db or {}
@@ -319,7 +416,13 @@ def walmart_health_summary(config: dict, db: dict, lines: list[str]) -> dict:
     }
 
 
-def classify_snapshot(service: dict, last_log_age_seconds: float | None, stale_seconds: int, retailers: list[dict]) -> tuple[str, str]:
+def classify_snapshot(
+    service: dict,
+    last_log_age_seconds: float | None,
+    stale_seconds: int,
+    retailers: list[dict],
+    safe_mode: dict | None = None,
+) -> tuple[str, str]:
     if service.get("running") is False:
         return "down", "Monitor LaunchAgent is not running"
     if last_log_age_seconds is None:
@@ -327,6 +430,10 @@ def classify_snapshot(service: dict, last_log_age_seconds: float | None, stale_s
     if last_log_age_seconds > stale_seconds:
         minutes = int(last_log_age_seconds // 60)
         return "down", f"No monitor log activity for {minutes} minutes"
+
+    paused = [r["name"] for r in retailers if r["status"] == "paused"]
+    if paused:
+        return "degraded", f"Safe mode active: {', '.join(paused[:3])}"
 
     degraded = [r["name"] for r in retailers if r["status"] == "degraded"]
     if degraded:
@@ -356,11 +463,12 @@ def build_snapshot(
     resolved_log_path, lines = read_recent_log_lines(log_path)
     last_log_at = latest_log_time(lines)
     last_log_age_seconds = (now - last_log_at).total_seconds() if last_log_at else None
-    retailers = summarize_retailer_health(lines)
+    safe_mode = safe_mode_summary(db_path, now=now)
+    retailers = apply_safe_mode_to_retailers(summarize_retailer_health(lines), safe_mode)
     walmart = walmart_health_summary(config, db, lines)
     service = service or launchagent_status(service_label)
     stale_seconds = int(stale_minutes * 60)
-    overall, message = classify_snapshot(service, last_log_age_seconds, stale_seconds, retailers)
+    overall, message = classify_snapshot(service, last_log_age_seconds, stale_seconds, retailers, safe_mode=safe_mode)
 
     return {
         "generated_at": now.strftime("%Y-%m-%d %H:%M:%S"),
@@ -379,12 +487,19 @@ def build_snapshot(
         },
         "retailers": retailers,
         "walmart": walmart,
-        "actions": action_suggestions(overall, walmart),
+        "safe_mode": safe_mode,
+        "actions": action_suggestions(overall, walmart, safe_mode),
     }
 
 
-def action_suggestions(overall: str, walmart: dict | None = None) -> list[str]:
+def action_suggestions(overall: str, walmart: dict | None = None, safe_mode: dict | None = None) -> list[str]:
     walmart = walmart or {}
+    if (safe_mode or {}).get("paused"):
+        return [
+            "./control.sh status-json",
+            "./control.sh logs",
+            "./control.sh safe-mode-clear",
+        ]
     if walmart.get("lane_state") in {"blocked", "degraded"}:
         return [
             "./control.sh doctor-walmart",

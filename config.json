@@ -29,6 +29,21 @@
     "block_backoff_minutes": 30,
     "owner_degraded_alerts": true
   },
+  "safe_mode": {
+    "enabled": true,
+    "backoff_minutes": 45,
+    "blocked_threshold_per_cycle": 3,
+    "unknown_threshold_per_cycle": 4,
+    "min_checks_per_cycle": 3,
+    "retailers": [
+      "amazon",
+      "bestbuy",
+      "costco",
+      "ebgames",
+      "walmart",
+      "pokemoncenter"
+    ]
+  },
   "products": [
     {
       "name": "PE SPC - Amazon.ca",

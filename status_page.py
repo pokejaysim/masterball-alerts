@@ -46,6 +46,8 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
       --down-bg: #fde7e4;
       --watch: #315f9d;
       --watch-bg: #e8f0fb;
+      --paused: #315f9d;
+      --paused-bg: #e8f0fb;
       --shadow: 0 18px 45px rgba(25, 35, 50, .08);
     }}
     * {{ box-sizing: border-box; }}
@@ -99,6 +101,7 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
     .status-degraded {{ color: var(--degraded); background: var(--degraded-bg); border-color: #efc574; }}
     .status-down {{ color: var(--down); background: var(--down-bg); border-color: #f2aaa4; }}
     .status-watch {{ color: var(--watch); background: var(--watch-bg); border-color: #b8cdeb; }}
+    .status-paused {{ color: var(--paused); background: var(--paused-bg); border-color: #b8cdeb; }}
     .grid {{
       display: grid;
       grid-template-columns: 1.1fr .9fr;
@@ -341,7 +344,8 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
       ok: "OK",
       degraded: "Degraded",
       down: "Down",
-      watch: "Watch"
+      watch: "Watch",
+      paused: "Paused"
     }};
 
     function text(id, value) {{
@@ -357,6 +361,10 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
 
     function statusClass(status) {{
       return "status-" + (status || "watch");
+    }}
+
+    function displayStatus(status) {{
+      return ["ok", "degraded", "down", "watch", "paused"].includes(status) ? status : "watch";
     }}
 
     function render(snapshot) {{
@@ -391,9 +399,10 @@ def html_page(snapshot: dict, refresh_seconds: int) -> str:
       retailers.innerHTML = "";
       (snapshot.retailers || []).forEach((row) => {{
         const tr = document.createElement("tr");
+        const shownStatus = displayStatus(row.status);
         tr.innerHTML = `
           <td>${{row.name}}</td>
-          <td><span class="mini-status ${{statusClass(row.status === "ok" ? "ok" : row.status === "degraded" ? "degraded" : "watch")}}">${{row.status}}</span></td>
+          <td><span class="mini-status ${{statusClass(shownStatus)}}">${{row.status}}</span></td>
           <td>${{row.note}}<br><span class="small">${{row.success}} success / ${{row.blocked}} blocked / ${{row.errors}} errors</span></td>
         `;
         retailers.appendChild(tr);

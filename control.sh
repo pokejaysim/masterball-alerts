@@ -232,6 +232,16 @@ case "$1" in
         "$PYTHON" "$SCRIPT_DIR/doctor.py" --walmart "$@"
         ;;
 
+    safe-mode-clear)
+        "$PYTHON" - <<'PY'
+from database import init_db, set_bot_state
+
+init_db()
+set_bot_state("retailer_safe_mode", "{}")
+print("✅ Retailer safe mode pauses cleared")
+PY
+        ;;
+
     test-product)
         if [ -z "$2" ]; then
             echo "Usage: $0 test-product <product-url>"
@@ -246,7 +256,7 @@ case "$1" in
         ;;
         
     *)
-        echo "Usage: $0 {bootstrap|start|stop|restart|status|logs|dashboard-start|dashboard-stop|dashboard-status|dashboard-open|dashboard-logs|status-json|discover-now|discover-dry-run|discover-walmart-dry-run|discover-auto-add|doctor|doctor-retailers|doctor-walmart|test-product|test}"
+        echo "Usage: $0 {bootstrap|start|stop|restart|status|logs|dashboard-start|dashboard-stop|dashboard-status|dashboard-open|dashboard-logs|status-json|discover-now|discover-dry-run|discover-walmart-dry-run|discover-auto-add|doctor|doctor-retailers|doctor-walmart|safe-mode-clear|test-product|test}"
         echo ""
         echo "Commands:"
         echo "  bootstrap        - Create/update venv, install dependencies, initialize DB"
@@ -268,6 +278,7 @@ case "$1" in
         echo "  doctor           - Check setup and local dependencies"
         echo "  doctor-retailers - Check setup plus one live check per retailer"
         echo "  doctor-walmart   - Check Walmart proxy/protected lane"
+        echo "  safe-mode-clear  - Clear temporary retailer pauses"
         echo "  test-product     - Check one product URL and print parsed result"
         echo "  test             - Alias for doctor"
         exit 1

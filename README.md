@@ -167,6 +167,8 @@ It shows whether the monitor LaunchAgent is running, how fresh the logs are, act
 
 The page also shows Walmart lane state, active Walmart product count, pending Walmart validation count, and whether the Walmart proxy is configured.
 
+If a retailer starts returning repeated blocks or unclear responses, the monitor enters safe mode for that retailer only. The dashboard shows that retailer as paused, keeps every existing stock state unchanged, and suggests `./control.sh safe-mode-clear` if you want to manually clear the temporary pause.
+
 ## 🔧 Troubleshooting
 
 **Telegram not sending:**
